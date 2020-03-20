@@ -1,0 +1,19 @@
+name: hyperv_dev_vm
+
+environment:
+  sdk: ">=2.7.0 <3.0.0"
+
+dependencies:
+  dexeca: ^1.0.1
+  drun: ^1.1.2
+  path: ^1.6.4
+  pretty_json: ^1.0.8
+  retry: ^3.0.0+1
+  utf: ^0.9.0+5
+  uuid: ^2.0.4
+  xml: ^3.7.0
+  xml2json: ^4.2.0
+  yaml: ^2.2.0
+
+dev_dependencies:
+  pedantic: ^1.8.0

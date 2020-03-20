@@ -1,0 +1,30 @@
+builders:
+  - type: hyperv-iso
+    iso_url: https://download.fedoraproject.org/pub/fedora/linux/releases/31/Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-31-1.9.iso
+    iso_checksum: 559e82173d44d5500739d473a32e2bd24a66a49f0034020f9f86c9d5da6a2c61
+    iso_checksum_type: sha256
+    generation: 2
+    disk_size: 200000
+    disk_additional_size: 200000
+    switch_name: Default Switch
+    enable_secure_boot: false
+    enable_dynamic_memory: true
+    guest_additions_mode: none
+    communicator: ssh
+    ssh_timeout: 15m
+    http_directory: .
+    http_port_min: 8080
+    http_port_max: 8080
+    boot_wait: 5s
+    boot_command:
+      - c<wait>
+      - linuxefi /images/pxeboot/vmlinuz ip=dhcp inst.ks=http://{{.HTTPIP}}:{{.HTTPPort}}/ks.cfg<enter>
+      - initrdefi /images/pxeboot/initrd.img<enter>
+      - boot<enter>
+    shutdown_command: sudo shutdown now
+    skip_export: true
+    headless: false
+
+provisioners:
+  - type: shell
+    script: provisioner.sh
