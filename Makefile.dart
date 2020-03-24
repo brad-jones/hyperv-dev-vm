@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:cli';
 import 'dart:convert';
-import 'dart:ffi';
 import 'dart:io';
 import 'package:dexeca/dexeca.dart';
 import 'package:drun/drun.dart';
@@ -52,7 +51,7 @@ Future<void> firewallClose() async {
 /// We have decided to stick with the Yaml to Json conversion for now instead
 /// of using the new Hcl support in packer because documentaion is lacking.
 ///
-/// * [userName] The username to create as part fo the kickstart installation.
+/// * [userName] The username to create as part of the kickstart installation.
 ///
 /// * [sshKeyFile] The ssh key to install against the user that is created.
 Future<void> build([
@@ -223,6 +222,7 @@ Future<void> install([
 
   await start(name);
   await updateHostsFile(name);
+  await installHostUpdater(name);
   await installWindowsTerminalEntry(name, userName, sshKeyFile, localAppData);
 }
 
@@ -315,8 +315,11 @@ Future<String> ipAddress([String name = 'dev-server']) async {
 /// Injects a new host file entry for a running VM.
 ///
 /// * [name] The name of new VM to add to your hosts file.
-Future<void> updateHostsFile([String name = 'dev-server', String ip]) async {
-  ip ??= await ipAddress(name);
+Future<void> updateHostsFile([
+  String name = 'dev-server',
+  String ip = '',
+]) async {
+  ip = ip == '' ? await ipAddress(name) : ip;
 
   if (!await _isElevated()) {
     print('elevating to write host file');
@@ -439,6 +442,8 @@ Future<void> clearKnownHosts([
 ///
 /// * [name] The name or the VM to create the task for.
 Future<void> installHostUpdater([String name = 'dev-server']) async {
+  print('install host updater');
+
   await _powershell('''
     \$Stt = New-ScheduledTaskTrigger -AtStartup;
 
@@ -463,6 +468,8 @@ Future<void> installHostUpdater([String name = 'dev-server']) async {
 
 /// Removes the Scheduled Task that runs on boot to update the hosts file.
 Future<void> uninstallHostUpdater([String name = 'dev-server']) async {
+  print('uninstall host updater');
+
   await _powershell('''
     Unregister-ScheduledTask "VMUpdateHostFile for ${name}" -Confirm:\$false;
   ''', elevated: true);
