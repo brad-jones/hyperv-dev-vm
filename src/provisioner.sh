@@ -1,1 +1,1 @@
-echo "Hello World";
+sudo dnf install tar tree;

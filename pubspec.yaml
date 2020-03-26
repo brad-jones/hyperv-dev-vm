@@ -4,11 +4,14 @@ environment:
   sdk: ">=2.7.0 <3.0.0"
 
 dependencies:
+  ansicolor: ^1.0.2
   dexeca: ^1.0.1
   drun: ^1.1.2
   path: ^1.6.4
   pretty_json: ^1.0.8
+  recase: ^3.0.0
   retry: ^3.0.0+1
+  stack_trace: ^1.9.3
   utf: ^0.9.0+5
   uuid: ^2.0.4
   xml: ^3.7.0

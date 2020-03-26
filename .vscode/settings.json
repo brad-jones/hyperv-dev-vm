@@ -23,6 +23,7 @@
 	// We like to make sure we don't make spelling mistakes.
 	// see: https://marketplace.visualstudio.com/items?itemName=streetsidesoftware.code-spell-checker
 	"cSpell.words": [
+		"ansicolor",
 		"bootproto",
 		"chronyd",
 		"cmdline",
@@ -37,6 +38,8 @@
 		"fsoptions",
 		"fstype",
 		"gecos",
+		"goexec",
+		"gofmt",
 		"hyperv",
 		"ignoredisk",
 		"initlabel",
@@ -46,8 +49,11 @@
 		"linuxefi",
 		"localdomain",
 		"mirrorlist",
+		"modwtsapi",
 		"ondisk",
+		"pnpm",
 		"pxeboot",
+		"recase",
 		"redhat",
 		"rootpw",
 		"selinux",
@@ -55,8 +61,10 @@
 		"sshkey",
 		"sudoers",
 		"umask",
+		"uuid",
 		"vmlinuz",
 		"winnt",
+		"wtsapi",
 		"xlayouts"
 	]
 }

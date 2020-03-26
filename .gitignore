@@ -1,5 +1,5 @@
-# Created by https://www.gitignore.io/api/node,dart,linux,macos,packer,windows
-# Edit at https://www.gitignore.io/?templates=node,dart,linux,macos,packer,windows
+# Created by https://www.gitignore.io/api/go,node,dart,linux,macos,packer,windows
+# Edit at https://www.gitignore.io/?templates=go,node,dart,linux,macos,packer,windows
 
 ### Dart ###
 # See https://www.dartlang.org/guides/libraries/private-files
@@ -23,6 +23,27 @@ doc/api/
 *.js_
 *.js.deps
 *.js.map
+
+### Go ###
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+### Go Patch ###
+/vendor/
+/Godeps/
 
 ### Linux ###
 *~
@@ -206,7 +227,7 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
-# End of https://www.gitignore.io/api/node,dart,linux,macos,packer,windows
+# End of https://www.gitignore.io/api/go,node,dart,linux,macos,packer,windows
 
-src/output-*/
-ks.cfg
+log.txt
+output-*/

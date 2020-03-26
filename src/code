@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+path="$@";
+ourHostname="$(hostname | cut -d "." -f1)";
+hostIp="$(/sbin/ip route | awk '/default/ { print $3 }')";
+
+fileOrFolder="--file-uri";
+if [ -d "$path" ]; then
+	fileOrFolder="--folder-uri";
+fi
+
+ssh ${hostIp} code ${fileOrFolder} vscode-remote://ssh-remote+${ourHostname}${path};

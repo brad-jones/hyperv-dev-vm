@@ -1,16 +1,15 @@
 import 'dart:async';
-import 'dart:cli';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dexeca/dexeca.dart';
 import 'package:drun/drun.dart';
 import 'package:path/path.dart' as p;
-import 'package:pretty_json/pretty_json.dart';
 import 'package:retry/retry.dart';
-import 'package:utf/utf.dart';
 import 'package:uuid/uuid.dart';
 import 'package:xml/xml.dart' as xml;
 import 'package:yaml/yaml.dart';
+import './Makefile.utils.dart';
+import './ssh-server/Makefile.dart' as sshServer;
 
 Future<void> main(List<String> argv) => drun(argv);
 
@@ -19,16 +18,16 @@ Future<void> main(List<String> argv) => drun(argv);
 /// This allows HyperV guests to access the packer HTTP server.
 /// Expect to see a UAC prompt as this opens an elevated powershell session.
 Future<void> firewallOpen() async {
-  print('opening firewall for packer');
+  log('opening firewall for packer');
 
-  await _powershell('''
+  await powershell('''
     New-NetFirewallRule `
-      -DisplayName "packer_http_server" `
+      -Name packer_http_server `
+      -DisplayName "Packer Http Server" `
       -Direction Inbound `
       -Action Allow `
       -Protocol TCP `
       -LocalPort 8000-9000;
-    sleep 1;
   ''', elevated: true);
 }
 
@@ -36,14 +35,11 @@ Future<void> firewallOpen() async {
 ///
 /// Expect to see a UAC prompt as this opens an elevated powershell session.
 Future<void> firewallClose() async {
-  print('closing firewall for packer');
-
-  await _powershell('''
-    Remove-NetFirewallRule `
-      -DisplayName "packer_http_server" `
-      -Verbose;
-    sleep 1;
-  ''', elevated: true);
+  log('closing firewall for packer');
+  await powershell(
+    'Remove-NetFirewallRule packer_http_server -Verbose;',
+    elevated: true,
+  );
 }
 
 /// Executes `packer build` with `./src/Packerfile.yml`.
@@ -59,30 +55,29 @@ Future<void> build([
   String sshKeyFile = '~/.ssh/id_rsa',
 ]) async {
   // Install the firewall rule if not installed
-  if (!await _firewallRuleInstalled()) {
+  if (!await firewallRuleInstalled('packer_http_server')) {
     await firewallOpen();
   }
 
   // Read in `./src/Packerfile.yml`.
-  print('parsing Packerfile.yml');
+  log('parsing Packerfile.yml');
   Map<String, dynamic> packerFile = json.decode(json.encode(loadYaml(
     await File(p.absolute('src', 'Packerfile.yml')).readAsString(),
   )));
 
   // Make the packerfile a little dynamic
-  packerFile['min_packer_version'] = await _getToolVersion('packer');
+  packerFile['min_packer_version'] = await getToolVersion('packer');
   packerFile['builders'][0]['ssh_username'] = userName;
-  packerFile['builders'][0]['ssh_private_key_file'] =
-      _normalisePath(sshKeyFile);
+  packerFile['builders'][0]['ssh_private_key_file'] = normalisePath(sshKeyFile);
 
   // Generate `./src/ks.cfg` from `./src/ks.cfg.tpl`.
-  print('generating ks.cfg');
+  log('generating ks.cfg');
   var kickStart = await File(p.absolute('src', 'ks.cfg.tpl')).readAsString();
   kickStart = kickStart.replaceAll('{{username}}', userName);
   kickStart = kickStart.replaceAll(
     '{{sshkey}}',
     await () async {
-      return (await File('${_normalisePath(sshKeyFile)}.pub').readAsString())
+      return (await File('${normalisePath(sshKeyFile)}.pub').readAsString())
           .trim();
     }(),
   );
@@ -104,7 +99,7 @@ Future<void> build([
   await packer;
 
   // Cleanup
-  print('cleanup ks.cfg');
+  log('cleanup ks.cfg');
   await File(p.absolute('src', 'ks.cfg')).delete();
 }
 
@@ -136,8 +131,10 @@ Future<void> install([
   @Env('USERNAME') String userName = 'packer',
   String sshKeyFile = '~/.ssh/id_rsa',
   @Env('LocalAppData') String localAppData,
+  String sshConfigFile = '~/.ssh/config',
+  String domain = 'hyper-v.local',
 ]) async {
-  dir = _normalisePath(dir);
+  dir = normalisePath(dir);
 
   await uninstall(name, dir, replaceDataDisk, localAppData);
 
@@ -159,8 +156,8 @@ Future<void> install([
     await build(userName, sshKeyFile);
   }
 
-  print('registering new instance of vm: ${name}');
-  await _powershell('''
+  log('registering new instance of vm: ${name}');
+  await powershell('''
     New-VM -Name "${name}" `
       -NoVHD `
       -Generation 2 `
@@ -184,11 +181,11 @@ Future<void> install([
     )));
   }
 
-  print('copying src disk images to new instance');
+  log('copying src disk images to new instance');
   await Future.wait(copyJobs);
 
-  print('configuring vm instance');
-  await _powershell('''
+  log('configuring vm instance');
+  await powershell('''
     Set-VMProcessor "${name}" `
       -Count 2 `
       -ExposeVirtualizationExtensions \$true;
@@ -221,9 +218,13 @@ Future<void> install([
   ''');
 
   await start(name);
-  await updateHostsFile(name);
-  await installHostUpdater(name);
-  await installWindowsTerminalEntry(name, userName, sshKeyFile, localAppData);
+  await updateHostsFile(name, domain);
+  await installHostUpdater(name, domain);
+  await installSshConfig(name, domain, sshConfigFile, userName, sshKeyFile);
+  await setGuestHostname(name, domain);
+  await installWindowsTerminalEntry(name, localAppData);
+  await sshServer.install();
+  await authorizeGuestToSshToHost(name);
 }
 
 /// Removes an instance of the VM.
@@ -239,20 +240,23 @@ Future<void> uninstall([
   String dir = '~/.hyperv',
   bool deleteEverything = false,
   @Env('LocalAppData') String localAppData,
+  String sshConfigFile = '~/.ssh/config',
 ]) async {
-  if (await _vmExists(name)) {
+  if (await vmExists(name)) {
     await stop(name);
-    print('unregistering vm: ${name}');
-    await _powershell('Remove-VM "${name}" -Force');
+    log('unregistering vm: ${name}');
+    await powershell('Remove-VM "${name}" -Force');
     await uninstallHostUpdater(name);
+    await uninstallSshConfig(name, sshConfigFile);
     await uninstallWindowsTerminalEntry(name, localAppData);
+    await sshServer.uninstall();
+    await unauthorizeGuestToSshToHost(name);
     if (deleteEverything) {
-      print('deleting ${p.join(_normalisePath(dir), name)}');
-      await Directory(p.join(_normalisePath(dir), name))
-          .delete(recursive: true);
+      log('deleting ${p.join(normalisePath(dir), name)}');
+      await Directory(p.join(normalisePath(dir), name)).delete(recursive: true);
     }
   } else {
-    print('vm does not exist nothing to uninstall');
+    log('vm does not exist nothing to uninstall');
   }
 }
 
@@ -260,16 +264,16 @@ Future<void> uninstall([
 ///
 /// * [name] The name of new VM to start.
 Future<void> start([String name = 'dev-server']) async {
-  print('starting: ${name}');
-  await _powershell('Start-VM "${name}"');
+  log('starting: ${name}');
+  await powershell('Start-VM "${name}"');
 }
 
 /// Stops the Virtual Machine
 ///
 /// * [name] The name of new VM to stop.
 Future<void> stop([String name = 'dev-server']) async {
-  print('stopping: ${name}');
-  await _powershell('Stop-VM "${name}" -Force');
+  log('stopping: ${name}');
+  await powershell('Stop-VM "${name}" -Force');
 }
 
 /// Prints the IP Address of a running VM.
@@ -278,9 +282,9 @@ Future<void> stop([String name = 'dev-server']) async {
 Future<String> ipAddress([String name = 'dev-server']) async {
   return await retry(() async {
     try {
-      print('attempting to get ip address of: ${name}');
+      log('attempting to get ip address of: ${name}');
 
-      var result = await _powershell(
+      var result = await powershell(
         '''
         Get-VM "${name}" | `
           Select-Object -ExpandProperty NetworkAdapters | `
@@ -303,7 +307,7 @@ Future<String> ipAddress([String name = 'dev-server']) async {
         throw Exception('not ipv4');
       }
 
-      print(address);
+      log(address);
       return ipAddresses.first;
     } catch (e) {
       if (e is Exception) rethrow;
@@ -317,14 +321,15 @@ Future<String> ipAddress([String name = 'dev-server']) async {
 /// * [name] The name of new VM to add to your hosts file.
 Future<void> updateHostsFile([
   String name = 'dev-server',
+  String domain = 'hyper-v.local',
   String ip = '',
 ]) async {
   ip = ip == '' ? await ipAddress(name) : ip;
 
-  if (!await _isElevated()) {
-    print('elevating to write host file');
+  if (!await isElevated()) {
+    log('elevating to write host file');
 
-    await _powershell(
+    await powershell(
       '''
       ${Platform.resolvedExecutable} ${p.absolute('Makefile.dart')} `
         update-hosts-file --name ${name} --ip ${ip};
@@ -335,7 +340,7 @@ Future<void> updateHostsFile([
     return;
   }
 
-  print('updating hosts file');
+  log('updating hosts file');
 
   var hostsFile = File('C:\\Windows\\System32\\Drivers\\etc\\hosts');
 
@@ -346,9 +351,9 @@ Future<void> updateHostsFile([
     }
     newLines.add(line);
   }
-  newLines.add('${ip} ${name}');
+  newLines.add('${ip} ${name}.${domain}');
 
-  print(newLines.join('\n'));
+  log(newLines.join('\n'));
 
   await hostsFile.writeAsString(newLines.join('\r\n'));
 
@@ -362,26 +367,19 @@ Future<void> updateHostsFile([
 ///
 /// * [name] The name of the VM that the new profile should connect to.
 ///
-/// * [userName] The user used to the connect via SSH to the VM.
-///
-/// * [sshKeyFile] The path to the SSH Key to use to connect to the VM.
-///
 /// * [localAppData] The path to the local `AppData` dir.
 Future<void> installWindowsTerminalEntry([
   String name = 'dev-server',
-  @Env('USERNAME') String userName = 'packer',
-  String sshKeyFile = '~/.ssh/id_rsa',
   @Env('LocalAppData') String localAppData,
 ]) async {
-  print('installing windows terminal profile for vm: ${name}');
+  log('installing windows terminal profile for vm: ${name}');
 
-  await _updateWindowsTerminalConfig(
+  await updateWindowsTerminalConfig(
     updater: (config) async {
       (config['profiles'] as List<dynamic>).insert(0, {
         'guid': '{${Uuid().v4()}}',
         'name': name,
-        'commandline':
-            'ssh -i ${_normalisePath(sshKeyFile)} ${userName}@${name}',
+        'commandline': 'ssh ${name}',
         'hidden': false,
         'fontSize': 10,
         'padding': '1',
@@ -403,9 +401,9 @@ Future<void> uninstallWindowsTerminalEntry([
   String name = 'dev-server',
   @Env('LocalAppData') String localAppData,
 ]) async {
-  print('uninstalling windows terminal profile for vm: ${name}');
+  log('uninstalling windows terminal profile for vm: ${name}');
 
-  await _updateWindowsTerminalConfig(
+  await updateWindowsTerminalConfig(
     updater: (config) async {
       (config['profiles'] as List<dynamic>)
           .removeWhere((profile) => profile['name'] == name);
@@ -425,9 +423,9 @@ Future<void> clearKnownHosts([
   String name = 'dev-server',
   String knownHostsFile = '~/.ssh/known_hosts',
 ]) async {
-  print('clearing ${knownHostsFile} file');
+  log('clearing ${knownHostsFile} file');
 
-  var knownHosts = File(_normalisePath(knownHostsFile));
+  var knownHosts = File(normalisePath(knownHostsFile));
 
   var newLines = [];
   for (var line in await knownHosts.readAsLines()) {
@@ -441,15 +439,18 @@ Future<void> clearKnownHosts([
 /// Creates a new Scheduled Task that will run on boot to update the hosts file.
 ///
 /// * [name] The name or the VM to create the task for.
-Future<void> installHostUpdater([String name = 'dev-server']) async {
-  print('install host updater');
+Future<void> installHostUpdater([
+  String name = 'dev-server',
+  String domain = 'hyper-v.local',
+]) async {
+  log('install host updater');
 
-  await _powershell('''
+  await powershell('''
     \$Stt = New-ScheduledTaskTrigger -AtStartup;
 
     \$Sta = New-ScheduledTaskAction `
       -Execute "${Platform.resolvedExecutable}" `
-      -Argument "${p.absolute('Makefile.dart')} update-hosts-file --name ${name}" `
+      -Argument "${p.absolute('Makefile.dart')} update-hosts-file --name ${name} --domain ${domain}" `
       -WorkingDirectory "${p.current}";
 
     \$STPrincipal = New-ScheduledTaskPrincipal `
@@ -468,145 +469,82 @@ Future<void> installHostUpdater([String name = 'dev-server']) async {
 
 /// Removes the Scheduled Task that runs on boot to update the hosts file.
 Future<void> uninstallHostUpdater([String name = 'dev-server']) async {
-  print('uninstall host updater');
+  log('uninstall host updater');
 
-  await _powershell('''
+  await powershell('''
     Unregister-ScheduledTask "VMUpdateHostFile for ${name}" -Confirm:\$false;
   ''', elevated: true);
 }
 
-Future<void> _updateWindowsTerminalConfig({
-  Future<dynamic> Function(dynamic) updater,
-  String localAppData,
-}) async {
-  var configFile = File(p.join(
-    localAppData,
-    'Packages',
-    'Microsoft.WindowsTerminal_8wekyb3d8bbwe',
-    'LocalState',
-    'profiles.json',
-  ));
-
-  if (!await configFile.exists()) {
-    throw 'windows terminal does not appear to be installed, see: https://aka.ms/terminal-documentation';
-  }
-
-  var jsonWithoutComments = [];
-  for (var line in await configFile.readAsLines()) {
-    if (line.trimLeft().startsWith('//')) continue;
-    jsonWithoutComments.add(line);
-  }
-
-  await configFile.writeAsString(
-    prettyJson(
-      await updater(
-        jsonDecode(
-          jsonWithoutComments.join(''),
-        ),
-      ),
-    ),
-  );
-}
-
-Future<String> _getToolVersion(String tool) async {
-  return (await File(p.absolute('.${tool}-version')).readAsString()).trim();
-}
-
-Process _powershell(
-  String script, {
-  bool elevated = false,
-  bool inheritStdio = true,
-}) {
-  if (elevated && !waitFor(_isElevated())) {
-    return _powershell('''
-    Start-Process powershell -Verb RunAs `
-    -ArgumentList "-NoLogo", "-NoProfile", `
-    "-EncodedCommand", "${base64.encode(encodeUtf16le(script))}";
-    ''');
-  }
-
-  if (inheritStdio) {
-    var tmpDir = p.normalize(Directory.systemTemp.createTempSync().path);
-    File(p.join(tmpDir, 'script.ps1')).writeAsStringSync(script);
-
-    var proc = dexeca(
-      'powershell',
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-File',
-        p.join(tmpDir, 'script.ps1'),
-      ],
-    );
-
-    proc.whenComplete(() {
-      if (tmpDir != null && Directory(tmpDir).existsSync()) {
-        Directory(tmpDir).deleteSync(recursive: true);
-      }
-    });
-
-    return proc;
-  }
-
-  return dexeca(
-    'powershell',
-    [
-      '-NoLogo',
-      '-NoProfile',
-      '-Output',
-      'XML',
-      '-EncodedCommand',
-      base64.encode(encodeUtf16le(script)),
-    ],
-    inheritStdio: false,
-  );
-}
-
-Future<bool> _isElevated() async {
-  var result = await _powershell(
-    '''
-      \$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent());
-      \$currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator);
-    ''',
-    inheritStdio: false,
+/// Inserts a new entry into ~/.ssh/config
+Future<void> installSshConfig([
+  String name = 'dev-server',
+  String domain = 'hyper-v.local',
+  String sshConfigFile = '~/.ssh/config',
+  @Env('USERNAME') String userName = 'packer',
+  String sshKeyFile = '~/.ssh/id_rsa',
+]) async {
+  log(
+    'inserting a new entry fro ${name} into ${normalisePath(sshConfigFile)}',
   );
 
-  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
-  var elevated = doc.descendants
-          .singleWhere((n) => n.attributes
-              .any((a) => a.name.local == 'S' && a.value == 'Output'))
-          .text ==
-      'true';
+  var sshConfig = File(normalisePath(sshConfigFile));
+  var config = await sshConfig.readAsString();
+  config = '''
+${config}
 
-  return elevated;
+Host ${name}
+  HostName ${name}.${domain}
+  User ${userName}
+  IdentityFile ${normalisePath(sshKeyFile)}
+''';
+
+  await sshConfig.writeAsString(config);
 }
 
-String _normalisePath(String input) {
-  return p.normalize(
-    input.replaceFirst(
-      '~',
-      Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'],
-    ),
-  );
-}
+/// Removes an entry from ~/.ssh/config
+Future<void> uninstallSshConfig([
+  String name = 'dev-server',
+  String sshConfigFile = '~/.ssh/config',
+]) async {
+  log('removing the ${name} entry from ${normalisePath(sshConfigFile)}');
 
-Future<bool> _vmExists(String name) async {
-  try {
-    await _powershell('Get-VM "${name}"', inheritStdio: false);
-  } on ProcessResult {
-    return false;
+  var sshConfig = File(normalisePath(sshConfigFile));
+
+  var skip = false;
+  var newLines = [];
+  for (var line in await sshConfig.readAsLines()) {
+    if (line.startsWith('Host')) skip = false;
+    if (line == 'Host ${name}' || skip) {
+      skip = true;
+      continue;
+    }
+    newLines.add(line);
   }
-  return true;
+
+  await sshConfig.writeAsString(newLines.join('\r\n'));
 }
 
-Future<bool> _firewallRuleInstalled() async {
-  try {
-    await _powershell(
-      'Get-NetFirewallRule -DisplayName "packer_http_server"',
-      inheritStdio: false,
-    );
-  } on ProcessResult {
-    return false;
-  }
-  return true;
-}
+/// Logs into the guest and configures it's internal hostname.
+///
+/// This relys on [installSshConfig]
+Future<void> setGuestHostname([
+  String name = 'dev-server',
+  String domain = 'hyper-v.local',
+]) async {}
+
+/// Inserts the guest's public key into the host's authorized_keys file.
+///
+/// This will execute `ssh-keygen` and replace any pre-existing key at
+/// `~/.ssh/id_rsa`.
+///
+/// This relys on [installSshConfig]
+Future<void> authorizeGuestToSshToHost([String name = 'dev-server']) async {}
+
+/// Removes the guest's public key from the host's authorized_keys file.
+///
+/// This leaves the guest's key intact, it only removes it from the host's
+/// `~/.ssh/authorized_keys` file.
+///
+/// This relys on [installSshConfig]
+Future<void> unauthorizeGuestToSshToHost([String name = 'dev-server']) async {}

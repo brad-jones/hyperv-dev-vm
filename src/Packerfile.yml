@@ -26,5 +26,8 @@ builders:
     headless: false
 
 provisioners:
+  - type: file
+    source: code
+    destination: /usr/local/bin/code
   - type: shell
     script: provisioner.sh
