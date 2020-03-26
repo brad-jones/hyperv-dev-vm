@@ -7,6 +7,7 @@ import 'package:dexeca/dexeca.dart';
 import 'package:path/path.dart' as p;
 import 'package:pretty_json/pretty_json.dart';
 import 'package:recase/recase.dart';
+import 'package:retry/retry.dart';
 import 'package:stack_trace/stack_trace.dart';
 import 'package:utf/utf.dart';
 import 'package:xml/xml.dart' as xml;
@@ -192,7 +193,27 @@ Future<String> whoAmI() async {
       .text;
 }
 
-// code --folder-uri vscode-remote://ssh-remote+dev-server/home/brad.jones/Projects/Personal/foobar
-// code --file-uri vscode-remote://ssh-remote+dev-server/home/brad.jones/Projects/Personal/foobar/README.md
-// Set-Service sshd -StartupType automatic
-// Start-Service sshd
+String projectRoot([String cwd]) {
+  cwd ??= p.current;
+  if (Directory(p.join(cwd, '.git')).existsSync()) {
+    return cwd;
+  }
+  return projectRoot(p.join(cwd, '..'));
+}
+
+Future<void> waitForSsh(String name) async {
+  await retry(() async {
+    try {
+      log('attempting to connect to: ${name}');
+      await dexeca('ssh', [
+        '-o',
+        'StrictHostKeyChecking=no',
+        name,
+        'true',
+      ]);
+    } catch (e) {
+      if (e is Exception) rethrow;
+      throw Exception(e);
+    }
+  });
+}

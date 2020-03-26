@@ -28,6 +28,6 @@ builders:
 provisioners:
   - type: file
     source: code
-    destination: /usr/local/bin/code
+    destination: /tmp/code
   - type: shell
     script: provisioner.sh

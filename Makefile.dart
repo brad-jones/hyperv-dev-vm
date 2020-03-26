@@ -136,7 +136,8 @@ Future<void> install([
 ]) async {
   dir = normalisePath(dir);
 
-  await uninstall(name, dir, replaceDataDisk, localAppData);
+  await uninstall(name, dir, replaceDataDisk, localAppData, sshConfigFile,
+      domain, userName);
 
   var systemDiskSrc = File(p.absolute(
     'src',
@@ -221,10 +222,11 @@ Future<void> install([
   await updateHostsFile(name, domain);
   await installHostUpdater(name, domain);
   await installSshConfig(name, domain, sshConfigFile, userName, sshKeyFile);
-  await setGuestHostname(name, domain);
   await installWindowsTerminalEntry(name, localAppData);
+  await waitForSsh(name);
+  await setGuestHostname(name, domain);
+  await authorizeGuestToSshToHost(name, domain, userName);
   await sshServer.install();
-  await authorizeGuestToSshToHost(name);
 }
 
 /// Removes an instance of the VM.
@@ -241,22 +243,23 @@ Future<void> uninstall([
   bool deleteEverything = false,
   @Env('LocalAppData') String localAppData,
   String sshConfigFile = '~/.ssh/config',
+  String domain = 'hyper-v.local',
+  @Env('USERNAME') String userName = 'packer',
 ]) async {
   if (await vmExists(name)) {
-    await stop(name);
     log('unregistering vm: ${name}');
+    await stop(name);
     await powershell('Remove-VM "${name}" -Force');
-    await uninstallHostUpdater(name);
-    await uninstallSshConfig(name, sshConfigFile);
-    await uninstallWindowsTerminalEntry(name, localAppData);
-    await sshServer.uninstall();
-    await unauthorizeGuestToSshToHost(name);
-    if (deleteEverything) {
-      log('deleting ${p.join(normalisePath(dir), name)}');
-      await Directory(p.join(normalisePath(dir), name)).delete(recursive: true);
-    }
-  } else {
-    log('vm does not exist nothing to uninstall');
+  }
+
+  await uninstallHostUpdater(name);
+  await uninstallSshConfig(name, sshConfigFile);
+  await uninstallWindowsTerminalEntry(name, localAppData);
+  await unauthorizeGuestToSshToHost(name, domain, userName);
+  await sshServer.uninstall();
+  if (deleteEverything) {
+    log('deleting ${p.join(normalisePath(dir), name)}');
+    await Directory(p.join(normalisePath(dir), name)).delete(recursive: true);
   }
 }
 
@@ -485,7 +488,7 @@ Future<void> installSshConfig([
   String sshKeyFile = '~/.ssh/id_rsa',
 ]) async {
   log(
-    'inserting a new entry fro ${name} into ${normalisePath(sshConfigFile)}',
+    'inserting a new entry for ${name} into ${normalisePath(sshConfigFile)}',
   );
 
   var sshConfig = File(normalisePath(sshConfigFile));
@@ -531,7 +534,19 @@ Future<void> uninstallSshConfig([
 Future<void> setGuestHostname([
   String name = 'dev-server',
   String domain = 'hyper-v.local',
-]) async {}
+]) async {
+  log('sudo hostnamectl set-hostname ${name}.${domain}');
+
+  await dexeca('ssh', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    name,
+    'sudo',
+    'hostnamectl',
+    'set-hostname',
+    '${name}.${domain}',
+  ]);
+}
 
 /// Inserts the guest's public key into the host's authorized_keys file.
 ///
@@ -539,7 +554,78 @@ Future<void> setGuestHostname([
 /// `~/.ssh/id_rsa`.
 ///
 /// This relys on [installSshConfig]
-Future<void> authorizeGuestToSshToHost([String name = 'dev-server']) async {}
+Future<void> authorizeGuestToSshToHost([
+  String name = 'dev-server',
+  String domain = 'hyper-v.local',
+  @Env('USERNAME') String userName = 'packer',
+]) async {
+  var comment = '${userName}@${name}.${domain}';
+
+  log('rm -f ~/.ssh/id_rsa');
+  await dexeca('ssh', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    name,
+    'rm',
+    '-f',
+    '~/.ssh/id_rsa',
+  ]);
+
+  log('rm -f ~/.ssh/id_rsa.pub');
+  await dexeca('ssh', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    name,
+    'rm',
+    '-f',
+    '~/.ssh/id_rsa.pub',
+  ]);
+
+  log('ssh-keygen -t rsa -b 4096 -C ${comment} -N "" -f ~/.ssh/id_rsa');
+  await dexeca('ssh', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    name,
+    'ssh-keygen',
+    '-t',
+    'rsa',
+    '-b',
+    '4096',
+    '-C',
+    comment,
+    '-N',
+    '""',
+    '-f',
+    '~/.ssh/id_rsa',
+  ]);
+
+  log('injecting guest public key into host ~/.ssh/authorized_keys file');
+  var result = await dexeca(
+    'ssh',
+    [
+      '-o',
+      'StrictHostKeyChecking=no',
+      name,
+      'cat',
+      '~/.ssh/id_rsa.pub',
+    ],
+    inheritStdio: false,
+  );
+
+  var pubKey = result.stdout.trim();
+  var authKeysFile = File(normalisePath('~/.ssh/authorized_keys'));
+
+  var newLines = <String>[];
+  if (await authKeysFile.exists()) {
+    for (var line in await authKeysFile.readAsLines()) {
+      if (line.contains(comment)) continue;
+      newLines.add(line);
+    }
+  }
+  newLines.add(pubKey);
+
+  await authKeysFile.writeAsString(newLines.join('\n'));
+}
 
 /// Removes the guest's public key from the host's authorized_keys file.
 ///
@@ -547,4 +633,27 @@ Future<void> authorizeGuestToSshToHost([String name = 'dev-server']) async {}
 /// `~/.ssh/authorized_keys` file.
 ///
 /// This relys on [installSshConfig]
-Future<void> unauthorizeGuestToSshToHost([String name = 'dev-server']) async {}
+Future<void> unauthorizeGuestToSshToHost([
+  String name = 'dev-server',
+  String domain = 'hyper-v.local',
+  @Env('USERNAME') String userName = 'packer',
+]) async {
+  var comment = '${userName}@${name}.${domain}';
+  var authKeysFile = File(normalisePath('~/.ssh/authorized_keys'));
+
+  if (!await authKeysFile.exists()) {
+    log('${authKeysFile.path} does not exist, nothign to do');
+    return;
+  }
+
+  var newLines = <String>[];
+  if (await authKeysFile.exists()) {
+    for (var line in await authKeysFile.readAsLines()) {
+      if (line.contains(comment)) continue;
+      newLines.add(line);
+    }
+  }
+
+  await authKeysFile.writeAsString(newLines.join('\n'));
+  log('removed ${comment} from ${authKeysFile.path}');
+}

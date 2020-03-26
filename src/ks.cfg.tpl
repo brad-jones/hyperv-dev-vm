@@ -15,7 +15,7 @@ clearpart --all --initlabel
 part /boot --fstype="ext4" --ondisk=sda --size=1024
 part /boot/efi --fstype="efi" --ondisk=sda --size=600 --fsoptions="umask=0077,shortname=winnt"
 part / --fstype="ext4" --ondisk=sda --grow
-part /home --fstype="ext4" --ondisk=sdb --grow
+part /home --label="/home" --fstype="ext4" --ondisk=sdb --grow
 part swap --fstype="swap" --ondisk=sda --size=10240
 
 # Network
@@ -50,6 +50,7 @@ hyperv-*
 %post --erroronfail
 echo "hv_sock" > /etc/modules-load.d/hv_sock.conf
 sed -e 's/^%wheel/#%wheel/g' -e 's/^# %wheel/%wheel/g' -i /etc/sudoers
+sed -i 's~UUID=.* /home~LABEL=/home /home~g' /etc/fstab
 %end
 
 # Finish up
