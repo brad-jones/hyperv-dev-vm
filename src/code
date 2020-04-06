@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 path="$(realpath $@)";
 ourHostname="$(hostname | cut -d "." -f1)";
-hostIp="$(/sbin/ip route | awk '/default/ { print $3 }')";
 
 fileOrFolder="--file-uri";
 if [[ -d "$path" ]]; then
 	fileOrFolder="--folder-uri";
 fi
 
-ssh -o StrictHostKeyChecking=no ${hostIp} code ${fileOrFolder} vscode-remote://ssh-remote+${ourHostname}${path};
+ssh -o StrictHostKeyChecking=no dom0.hyper-v.local \
+	code ${fileOrFolder} vscode-remote://ssh-remote+${ourHostname}${path};

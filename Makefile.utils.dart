@@ -43,6 +43,9 @@ void log(String message, {String prefix}) {
 
   var pen = AnsiPen()..xterm(_prefixToColor[prefix]);
   print('${pen(prefix)} | ${message}');
+  File(p.absolute('log.txt')).writeAsStringSync(
+      '${DateTime.now().toIso8601String()} - ${prefix} | ${message}\n',
+      mode: FileMode.append);
 }
 
 var _allColors = <int>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -101,7 +104,7 @@ Process powershell(
 }) {
   if (elevated && !waitFor(isElevated())) {
     return powershell('''
-    Start-Process powershell -Verb RunAs `
+    Start-Process powershell -Wait -Verb RunAs `
     -ArgumentList "-NoLogo", "-NoProfile", `
     "-EncodedCommand", "${base64.encode(encodeUtf16le(script))}";
     ''');
@@ -182,6 +185,58 @@ Future<bool> firewallRuleInstalled(String name) async {
     return false;
   }
   return true;
+}
+
+Future<bool> nfsClientInstalled() async {
+  try {
+    await powershell(
+      'nfsadmin.exe client /?',
+      inheritStdio: false,
+    );
+  } on ProcessResult {
+    return false;
+  }
+  return true;
+}
+
+Future<String> getNextFreeDriveLetter() async {
+  var result = await powershell(
+    'ls function:[d-z]: -n | ?{ !(test-path \$_) } | select -First 1',
+    inheritStdio: false,
+  );
+  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
+  return doc.descendants
+      .singleWhere((n) =>
+          n.attributes.any((a) => a.name.local == 'S' && a.value == 'Output'))
+      .text;
+}
+
+class Mounted {
+  final String driveLetter;
+  final String path;
+  Mounted(this.driveLetter, this.path);
+}
+
+Future<Mounted> isNfsMounted(
+  String name,
+  String domain,
+  String userName,
+) async {
+  var path = '\\\\${name}.${domain}\\home\\${userName}';
+  var result = await powershell('Get-PSDrive', inheritStdio: false);
+  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
+  var mount = doc.descendants
+      .where((n) => n.attributes
+          .any((a) => a.name.local == 'N' && a.value == 'DisplayRoot'))
+      .where((n) => n.text == path);
+  if (mount.isEmpty) {
+    return null;
+  }
+  var driveLetter = mount.first.parent.children
+      .singleWhere((n) =>
+          n.attributes.any((a) => a.name.local == 'N' && a.value == 'Name'))
+      .text;
+  return Mounted(driveLetter, path);
 }
 
 Future<String> whoAmI() async {

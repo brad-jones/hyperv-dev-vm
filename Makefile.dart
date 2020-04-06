@@ -9,7 +9,7 @@ import 'package:uuid/uuid.dart';
 import 'package:xml/xml.dart' as xml;
 import 'package:yaml/yaml.dart';
 import './Makefile.utils.dart';
-import './ssh-server/Makefile.dart' as sshServer;
+import './ssh-server/Makefile.dart' as ssh_server;
 
 Future<void> main(List<String> argv) => drun(argv);
 
@@ -220,13 +220,14 @@ Future<void> install([
 
   await start(name);
   await updateHostsFile(name, domain);
-  await installHostUpdater(name, domain);
+  await installHostUpdater(name, domain, userName);
   await installSshConfig(name, domain, sshConfigFile, userName, sshKeyFile);
   await installWindowsTerminalEntry(name, localAppData);
   await waitForSsh(name);
   await setGuestHostname(name, domain);
   await authorizeGuestToSshToHost(name, domain, userName);
-  await sshServer.install();
+  await ssh_server.install();
+  await mountNfsShare(name, domain, userName);
 }
 
 /// Removes an instance of the VM.
@@ -256,7 +257,8 @@ Future<void> uninstall([
   await uninstallSshConfig(name, sshConfigFile);
   await uninstallWindowsTerminalEntry(name, localAppData);
   await unauthorizeGuestToSshToHost(name, domain, userName);
-  await sshServer.uninstall();
+  await ssh_server.uninstall();
+  await unmountNfsShare(name, domain, userName);
   if (deleteEverything) {
     log('deleting ${p.join(normalisePath(dir), name)}');
     await Directory(p.join(normalisePath(dir), name)).delete(recursive: true);
@@ -326,6 +328,8 @@ Future<void> updateHostsFile([
   String name = 'dev-server',
   String domain = 'hyper-v.local',
   String ip = '',
+  @Env('USERNAME') String userName = 'packer',
+  bool dontRunTasks = false,
 ]) async {
   ip = ip == '' ? await ipAddress(name) : ip;
 
@@ -335,11 +339,17 @@ Future<void> updateHostsFile([
     await powershell(
       '''
       ${Platform.resolvedExecutable} ${p.absolute('Makefile.dart')} `
-        update-hosts-file --name ${name} --ip ${ip};
-      sleep 1;
+        update-hosts-file `
+          --name ${name} `
+          --domain ${domain} `
+          --ip ${ip} `
+          --user-name ${userName}
+          --dont-run-tasks;
       ''',
       elevated: true,
     );
+
+    await clearKnownHosts(name);
     return;
   }
 
@@ -360,7 +370,9 @@ Future<void> updateHostsFile([
 
   await hostsFile.writeAsString(newLines.join('\r\n'));
 
-  await clearKnownHosts(name);
+  if (!dontRunTasks) {
+    await clearKnownHosts(name, 'C:\\Users\\${userName}\\.ssh\\known_hosts');
+  }
 }
 
 /// Injects a new profile into the Windows Terminal Config.
@@ -445,6 +457,7 @@ Future<void> clearKnownHosts([
 Future<void> installHostUpdater([
   String name = 'dev-server',
   String domain = 'hyper-v.local',
+  @Env('USERNAME') String userName = 'packer',
 ]) async {
   log('install host updater');
 
@@ -453,7 +466,7 @@ Future<void> installHostUpdater([
 
     \$Sta = New-ScheduledTaskAction `
       -Execute "${Platform.resolvedExecutable}" `
-      -Argument "${p.absolute('Makefile.dart')} update-hosts-file --name ${name} --domain ${domain}" `
+      -Argument "${p.absolute('Makefile.dart')} update-hosts-file --name ${name} --domain ${domain} --user-name ${userName}" `
       -WorkingDirectory "${p.current}";
 
     \$STPrincipal = New-ScheduledTaskPrincipal `
@@ -656,4 +669,51 @@ Future<void> unauthorizeGuestToSshToHost([
 
   await authKeysFile.writeAsString(newLines.join('\n'));
   log('removed ${comment} from ${authKeysFile.path}');
+}
+
+Future<void> mountNfsShare([
+  String name = 'dev-server',
+  String domain = 'hyper-v.local',
+  @Env('USERNAME') String userName = 'packer',
+]) async {
+  if (!await nfsClientInstalled()) {
+    log('installing nfs client');
+    await powershell('''
+    Enable-WindowsOptionalFeature -FeatureName NFS-Administration -All -Online;
+    Enable-WindowsOptionalFeature -FeatureName ClientForNFS-Infrastructure -All -Online;
+    Enable-WindowsOptionalFeature -FeatureName ServicesForNFS-ClientOnly -All -Online;
+    Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default -Name AnonymousUid -Value 1000 -Type DWord;
+    Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default -Name AnonymousGid -Value 1000 -Type DWord;
+    ''', elevated: true);
+  }
+
+  var mounted = await isNfsMounted(name, domain, userName);
+  if (mounted != null) {
+    log('drive already mounted ${mounted.driveLetter}:\\ => nfs:${mounted.path}');
+    return;
+  }
+
+  var driveLetter = await getNextFreeDriveLetter();
+  var path = '\\\\${name}.${domain}\\home\\${userName}';
+
+  log('mounting drive ${driveLetter}\\ => nfs:${path}');
+  await dexeca(
+    'net',
+    ['use', driveLetter, path, '/persistent:yes'],
+    runInShell: true,
+  );
+}
+
+Future<void> unmountNfsShare([
+  String name = 'dev-server',
+  String domain = 'hyper-v.local',
+  @Env('USERNAME') String userName = 'packer',
+]) async {
+  var mounted = await isNfsMounted(name, domain, userName);
+  if (mounted == null) {
+    log('could not find a drive to unmount');
+    return;
+  }
+  log('un-mounting ${mounted.driveLetter}:\\');
+  await dexeca('umount', ['${mounted.driveLetter}:', '-f'], runInShell: true);
 }

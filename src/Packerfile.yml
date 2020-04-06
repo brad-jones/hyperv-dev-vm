@@ -26,8 +26,5 @@ builders:
     headless: false
 
 provisioners:
-  - type: file
-    source: code
-    destination: /tmp/code
   - type: shell
     script: provisioner.sh
