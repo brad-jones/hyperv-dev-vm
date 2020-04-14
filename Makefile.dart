@@ -228,6 +228,7 @@ Future<void> install([
   await authorizeGuestToSshToHost(name, domain, userName);
   await ssh_server.install();
   await mountNfsShare(name, domain, userName);
+  await executeFirstLogin(name);
 }
 
 /// Removes an instance of the VM.
@@ -249,6 +250,7 @@ Future<void> uninstall([
 ]) async {
   if (await vmExists(name)) {
     log('unregistering vm: ${name}');
+    await unmountNfsShare(name, domain, userName);
     await stop(name);
     await powershell('Remove-VM "${name}" -Force');
   }
@@ -258,7 +260,6 @@ Future<void> uninstall([
   await uninstallWindowsTerminalEntry(name, localAppData);
   await unauthorizeGuestToSshToHost(name, domain, userName);
   await ssh_server.uninstall();
-  await unmountNfsShare(name, domain, userName);
   if (deleteEverything) {
     log('deleting ${p.join(normalisePath(dir), name)}');
     await Directory(p.join(normalisePath(dir), name)).delete(recursive: true);
@@ -343,7 +344,7 @@ Future<void> updateHostsFile([
           --name ${name} `
           --domain ${domain} `
           --ip ${ip} `
-          --user-name ${userName}
+          --user-name ${userName} `
           --dont-run-tasks;
       ''',
       elevated: true,
@@ -513,6 +514,7 @@ Host ${name}
   HostName ${name}.${domain}
   User ${userName}
   IdentityFile ${normalisePath(sshKeyFile)}
+  StrictHostKeyChecking no
 ''';
 
   await sshConfig.writeAsString(config);
@@ -716,4 +718,35 @@ Future<void> unmountNfsShare([
   }
   log('un-mounting ${mounted.driveLetter}:\\');
   await dexeca('umount', ['${mounted.driveLetter}:', '-f'], runInShell: true);
+}
+
+Future<void> executeFirstLogin([String name = 'dev-server']) async {
+  await dexeca('scp', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    p.absolute('first-login'),
+    '${name}:/tmp/script',
+  ]);
+  await dexeca('ssh', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    name,
+    'chmod',
+    '+x',
+    '/tmp/script',
+  ]);
+  await dexeca('ssh', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    name,
+    '/tmp/script',
+  ]);
+  await dexeca('ssh', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    name,
+    'rm',
+    '-f',
+    '/tmp/script',
+  ]);
 }
