@@ -86,7 +86,7 @@ Future<void> build([
   // Start packer
   var packer = dexeca(
     'packer',
-    ['build', '-force', '-'],
+    ['build', '--only', 'hyperv-iso', '-force', '-'],
     workingDirectory: p.absolute('src'),
   );
 
