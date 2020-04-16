@@ -51,6 +51,8 @@ hyperv-*
 echo "hv_sock" > /etc/modules-load.d/hv_sock.conf
 sed -e 's/^%wheel/#%wheel/g' -e 's/^# %wheel/%wheel/g' -i /etc/sudoers
 sed -i 's~UUID=.* /home~LABEL=/home /home~g' /etc/fstab
+systemctl mask tmp.mount
+echo 'fs.inotify.max_user_watches=524288' >> /etc/sysctl.conf
 %end
 
 # Finish up
