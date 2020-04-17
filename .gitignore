@@ -233,3 +233,4 @@ log.txt
 output-*/
 /first-login
 ks.cfg
+userdata.yml

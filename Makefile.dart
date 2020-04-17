@@ -50,9 +50,17 @@ Future<void> firewallClose() async {
 /// * [userName] The username to create as part of the kickstart installation.
 ///
 /// * [sshKeyFile] The ssh key to install against the user that is created.
+///
+/// * [type] The packer build type to run, must match exactly one of the
+///   options in the Packerfile.yml
+///
+/// * [tag] Use this just like you would a docker image tag to create different
+///   versions of the VM image otherwise the image will be overwritten each build.
 Future<void> build([
   @Env('USERNAME') String userName = 'packer',
   String sshKeyFile = '~/.ssh/id_rsa',
+  String type = 'hyperv-iso',
+  @Abbr('t') String tag = 'latest',
 ]) async {
   // Install the firewall rule if not installed
   if (!await firewallRuleInstalled('packer_http_server')) {
@@ -66,27 +74,47 @@ Future<void> build([
   )));
 
   // Make the packerfile a little dynamic
+  // This is instead of writing a seperate temp json var file
   packerFile['min_packer_version'] = await getToolVersion('packer');
-  packerFile['builders'][0]['ssh_username'] = userName;
-  packerFile['builders'][0]['ssh_private_key_file'] = normalisePath(sshKeyFile);
+  packerFile['variables']['tag'] = tag;
+  packerFile['variables']['ssh_username'] = userName;
+  packerFile['variables']['ssh_private_key_file'] = normalisePath(sshKeyFile);
 
   // Generate `./src/ks.cfg` from `./src/ks.cfg.tpl`.
-  log('generating ks.cfg');
-  var kickStart = await File(p.absolute('src', 'ks.cfg.tpl')).readAsString();
-  kickStart = kickStart.replaceAll('{{username}}', userName);
-  kickStart = kickStart.replaceAll(
-    '{{sshkey}}',
-    await () async {
-      return (await File('${normalisePath(sshKeyFile)}.pub').readAsString())
-          .trim();
-    }(),
-  );
-  await File(p.absolute('src', 'ks.cfg')).writeAsString(kickStart);
+  if (type == 'hyperv-iso') {
+    log('generating ks.cfg');
+    var kickStart = await File(p.absolute('src', 'ks.cfg.tpl')).readAsString();
+    kickStart = kickStart.replaceAll('{{username}}', userName);
+    kickStart = kickStart.replaceAll(
+      '{{sshkey}}',
+      await () async {
+        return (await File('${normalisePath(sshKeyFile)}.pub').readAsString())
+            .trim();
+      }(),
+    );
+    await File(p.absolute('src', 'ks.cfg')).writeAsString(kickStart);
+  }
+
+  // Generate `./src/userdata.yml` from `./src/userdata.yml.tpl`.
+  if (type == 'amazon-ebs') {
+    log('generating userdata.yml');
+    var userData =
+        await File(p.absolute('src', 'userdata.yml.tpl')).readAsString();
+    userData = userData.replaceAll('{{username}}', userName);
+    userData = userData.replaceAll(
+      '{{sshkey}}',
+      await () async {
+        return (await File('${normalisePath(sshKeyFile)}.pub').readAsString())
+            .trim();
+      }(),
+    );
+    await File(p.absolute('src', 'userdata.yml')).writeAsString(userData);
+  }
 
   // Start packer
   var packer = dexeca(
     'packer',
-    ['build', '--only', 'hyperv-iso', '-force', '-'],
+    ['build', '--only', type, '-force', '-'],
     workingDirectory: p.absolute('src'),
   );
 
@@ -99,8 +127,14 @@ Future<void> build([
   await packer;
 
   // Cleanup
-  log('cleanup ks.cfg');
-  await File(p.absolute('src', 'ks.cfg')).delete();
+  if (type == 'hyperv-iso') {
+    log('cleanup ks.cfg');
+    await File(p.absolute('src', 'ks.cfg')).delete();
+  }
+  if (type == 'amazon-ebs') {
+    log('cleanup userdata.yml');
+    await File(p.absolute('src', 'userdata.yml')).delete();
+  }
 }
 
 /// Creates a new instance of the built vm image.
