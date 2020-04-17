@@ -7,16 +7,14 @@ sudo mkdir -p /usr/local/bin;
 # It is handy to be able to call out to the host on occasion which is
 # effectively the default gateway, this will add a new host file entry
 # at boot time.
-sudo curl -s http://${PACKER_HTTP_ADDR}/set-default-gateway-host -o /usr/local/bin/set-default-gateway-host;
-sudo curl -s http://${PACKER_HTTP_ADDR}/set-default-gateway-host.service -o /etc/systemd/system/set-default-gateway-host.service;
-echo "chmod +x /usr/local/bin/set-default-gateway-host";
-sudo chmod +x /usr/local/bin/set-default-gateway-host;
-echo "systemctl daemon-reload";
-sudo systemctl daemon-reload;
-sudo systemctl enable \
-	systemd-networkd.service \
-	systemd-networkd-wait-online.service \
-	set-default-gateway-host.service;
+#sudo cp /tmp/set-default-gateway-host /usr/local/bin/set-default-gateway-host;
+#sudo cp /tmp/set-default-gateway-host.service /etc/systemd/system/set-default-gateway-host.service;
+#sudo chmod +x /usr/local/bin/set-default-gateway-host;
+#sudo systemctl daemon-reload;
+#sudo systemctl enable \
+#	systemd-networkd.service \
+#	systemd-networkd-wait-online.service \
+#	set-default-gateway-host.service;
 
 # The intension is to spend almost all our time with-in this VM's shell and so
 # I still want to be able to use VsCode just by executing `code ./some/path`.
@@ -30,8 +28,7 @@ sudo systemctl enable \
 #
 # One day I will learn how to use vim properly haha
 sudo dnf install -y tar;
-sudo curl -s http://${PACKER_HTTP_ADDR}/code -o /usr/local/bin/code;
-echo "chmod +x /usr/local/bin/code";
+sudo cp /tmp/code /usr/local/bin/code;
 sudo chmod +x /usr/local/bin/code;
 
 # The plan is to do 99% of our work with-in the confines of this VM, just using
@@ -39,9 +36,9 @@ sudo chmod +x /usr/local/bin/code;
 # files between the guest and host. CIFS/Samba is slow, NFS should be faster.
 #
 # Consider https://github.com/billziss-gh/sshfs-win as an alternative?
-sudo dnf install -y nfs-utils;
-sudo systemctl enable rpcbind nfs-server;
-sudo sh -c "echo '/home/$USER dom0.hyper-v.local(rw,async,all_squash,anonuid=$(id -u),anongid=$(id -g))' >> /etc/exports";
+#sudo dnf install -y nfs-utils;
+#sudo systemctl enable rpcbind nfs-server;
+#sudo sh -c "echo '/home/$USER dom0.hyper-v.local(rw,async,all_squash,anonuid=$(id -u),anongid=$(id -g))' >> /etc/exports";
 
 # Make sure this image is as small as possible
 sudo rm -rf /tmp/*;

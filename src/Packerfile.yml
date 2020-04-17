@@ -1,18 +1,20 @@
 variables:
-  # Use this just like you would a docker image tag.
-  #
-  # So if you do not override this value you can run this build as many times as
-  # you like and there will only ever be a single image created, each time
-  # overriding the previous.
+  # Use this just like you would a docker image tag to create different versions
+  # of the VM image otherwise the image will be overwritten each build.
   tag: latest
+
+  # The ssh credentials to use to connect the provisioners
+  ssh_username: packer
+  ssh_private_key_file: ~/.ssh/id_rsa
 
   # The EC2 instance type that will be used for the build,
   # irrelevant for other builders.
   instance_type: t3.micro
 
-  # The ssh credentials to use to connect the provisioners
-  ssh_username: packer
-  ssh_private_key_file: ~/.ssh/id_rsa
+  # Select a VPC and Subnet to use for the EC2 instance,
+  # irrelevant for other builders.
+  vpc_filter: "*"
+  subnet_filter: "core-network-release-Application0Stack-P9YFNOWQIZGO-SubnetAppWebTierA"
 
 builders:
   - type: hyperv-iso
@@ -46,7 +48,7 @@ builders:
 
   - type: amazon-ebs
     instance_type: "{{user `instance_type`}}"
-    ami_name: dev-server-{{user `ami_tag`}}
+    ami_name: dev-server-{{user `tag`}}
     ami_description: A Linux development environment
     source_ami_filter:
       most_recent: true
@@ -62,38 +64,20 @@ builders:
     communicator: ssh
     ssh_username: "{{user `ssh_username`}}"
     ssh_private_key_file: "{{user `ssh_private_key_file`}}"
-
-    # The "test" & "uat" accounts have a single VPC prefixed with the name
-    # "core-network". The "prod" account has a VPC called "Application0".
-    # This is just me inspecting the payroll accounts, not really sure if
-    # this is a standard or not...
     vpc_filter:
       filters:
-        "tag:Name": Application0
-
-    # This filter might not be completely best practice,
-    # ie: spinning up a build on a subnet called "SubnetAppELBTierB"
-    # may not be appropriate but it does work.
+        "tag:Name": "{{user `vpc_filter`}}"
     subnet_filter:
       most_free: true
       random: true
       filters:
-        "tag:Name": Application0*
-
-    # This build assumes it will be run inside one of Xero's "test" AWS accounts
-    # which have direct network access from the office(s). Hence no need to
-    # expose anything publicly.
-    associate_public_ip_address: false
-
-    # see: https://confluence.teamxero.com/display/SEC/AWS+Tagging+Standards
-    #tags:
-    #  Name: k8-node-lin-{{user `ami_tag`}}
-    #  portfolio: pay
-    #  product: crossproduct
-    #  owner: peopleportfoliodevopsalerts@xero.com
-    #  dataclassification: x5
-    #  dataclassificationdate: 2020-02-20
+        "tag:Name": "{{user `subnet_filter`}}"
+    tags:
+      Name: dev-server-{{user `tag`}}
 
 provisioners:
+  - type: file
+    source: ./resources/
+    destination: /tmp
   - type: shell
     script: provisioner.sh

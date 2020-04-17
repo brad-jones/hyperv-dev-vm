@@ -63,8 +63,10 @@ Future<void> build([
   @Abbr('t') String tag = 'latest',
 ]) async {
   // Install the firewall rule if not installed
-  if (!await firewallRuleInstalled('packer_http_server')) {
-    await firewallOpen();
+  if (type == 'hyperv-iso') {
+    if (!await firewallRuleInstalled('packer_http_server')) {
+      await firewallOpen();
+    }
   }
 
   // Read in `./src/Packerfile.yml`.
@@ -109,6 +111,9 @@ Future<void> build([
       }(),
     );
     await File(p.absolute('src', 'userdata.yml')).writeAsString(userData);
+
+    // TODO: Inject custom tags here
+    //packerFile['builders'][1]['tags'][''] = '';
   }
 
   // Start packer
@@ -167,6 +172,8 @@ Future<void> install([
   @Env('LocalAppData') String localAppData,
   String sshConfigFile = '~/.ssh/config',
   String domain = 'hyper-v.local',
+  String type = 'hyperv-iso',
+  @Abbr('t') String tag = 'latest',
 ]) async {
   dir = normalisePath(dir);
 
@@ -175,20 +182,20 @@ Future<void> install([
 
   var systemDiskSrc = File(p.absolute(
     'src',
-    'output-hyperv-iso',
+    'dev-server-${tag}',
     'Virtual Hard Disks',
     'packer-hyperv-iso.vhdx',
   ));
 
   var dataDiskSrc = File(p.absolute(
     'src',
-    'output-hyperv-iso',
+    'dev-server-${tag}',
     'Virtual Hard Disks',
     'packer-hyperv-iso-0.vhdx',
   ));
 
   if (!await systemDiskSrc.exists() || rebuild) {
-    await build(userName, sshKeyFile);
+    await build(userName, sshKeyFile, type, tag);
   }
 
   log('registering new instance of vm: ${name}');
