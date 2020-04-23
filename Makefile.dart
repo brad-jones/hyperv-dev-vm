@@ -1,397 +1,100 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'package:dexeca/dexeca.dart';
+import 'dart:async';
+
 import 'package:drun/drun.dart';
-import 'package:path/path.dart' as p;
-import 'package:retry/retry.dart';
 import 'package:uuid/uuid.dart';
-import 'package:xml/xml.dart' as xml;
-import 'package:yaml/yaml.dart';
+import 'package:dexeca/dexeca.dart';
+import 'package:path/path.dart' as p;
+
+import './Makefile.opts.dart';
 import './Makefile.utils.dart';
-import './ssh-server/Makefile.dart' as ssh_server;
+import './ec2/Makefile.dart' as ec2;
+import './hyperv/Makefile.dart' as hyperv;
+import './ssh-server/Makefile.dart' as ssh;
 
 Future<void> main(List<String> argv) => drun(argv);
 
-/// Run this before running [build].
-///
-/// This allows HyperV guests to access the packer HTTP server.
-/// Expect to see a UAC prompt as this opens an elevated powershell session.
-Future<void> firewallOpen() async {
-  log('opening firewall for packer');
-
-  await powershell('''
-    New-NetFirewallRule `
-      -Name packer_http_server `
-      -DisplayName "Packer Http Server" `
-      -Direction Inbound `
-      -Action Allow `
-      -Protocol TCP `
-      -LocalPort 8000-9000;
-  ''', elevated: true);
-}
-
-/// This removes the firewall rule created by [firewallOpen].
-///
-/// Expect to see a UAC prompt as this opens an elevated powershell session.
-Future<void> firewallClose() async {
-  log('closing firewall for packer');
-  await powershell(
-    'Remove-NetFirewallRule packer_http_server -Verbose;',
-    elevated: true,
-  );
-}
-
-/// Executes `packer build` with `./src/Packerfile.yml`.
-///
-/// We have decided to stick with the Yaml to Json conversion for now instead
-/// of using the new Hcl support in packer because documentaion is lacking.
-///
-/// * [userName] The username to create as part of the kickstart installation.
-///
-/// * [sshKeyFile] The ssh key to install against the user that is created.
-///
-/// * [type] The packer build type to run, must match exactly one of the
-///   options in the Packerfile.yml
-///
-/// * [tag] Use this just like you would a docker image tag to create different
-///   versions of the VM image otherwise the image will be overwritten each build.
-Future<void> build([
-  @Env('USERNAME') String userName = 'packer',
-  String sshKeyFile = '~/.ssh/id_rsa',
-  String type = 'hyperv-iso',
-  @Abbr('t') String tag = 'latest',
-]) async {
-  // Install the firewall rule if not installed
-  if (type == 'hyperv-iso') {
-    if (!await firewallRuleInstalled('packer_http_server')) {
-      await firewallOpen();
-    }
-  }
-
-  // Read in `./src/Packerfile.yml`.
-  log('parsing Packerfile.yml');
-  Map<String, dynamic> packerFile = json.decode(json.encode(loadYaml(
-    await File(p.absolute('src', 'Packerfile.yml')).readAsString(),
-  )));
-
-  // Make the packerfile a little dynamic
-  // This is instead of writing a seperate temp json var file
-  packerFile['min_packer_version'] = await getToolVersion('packer');
-  packerFile['variables']['tag'] = tag;
-  packerFile['variables']['ssh_username'] = userName;
-  packerFile['variables']['ssh_private_key_file'] = normalisePath(sshKeyFile);
-
-  // Generate `./src/ks.cfg` from `./src/ks.cfg.tpl`.
-  if (type == 'hyperv-iso') {
-    log('generating ks.cfg');
-    var kickStart = await File(p.absolute('src', 'ks.cfg.tpl')).readAsString();
-    kickStart = kickStart.replaceAll('{{username}}', userName);
-    kickStart = kickStart.replaceAll(
-      '{{sshkey}}',
-      await () async {
-        return (await File('${normalisePath(sshKeyFile)}.pub').readAsString())
-            .trim();
-      }(),
-    );
-    await File(p.absolute('src', 'ks.cfg')).writeAsString(kickStart);
-  }
-
-  // Generate `./src/userdata.yml` from `./src/userdata.yml.tpl`.
-  if (type == 'amazon-ebs') {
-    log('generating userdata.yml');
-    var userData =
-        await File(p.absolute('src', 'userdata.yml.tpl')).readAsString();
-    userData = userData.replaceAll('{{username}}', userName);
-    userData = userData.replaceAll(
-      '{{sshkey}}',
-      await () async {
-        return (await File('${normalisePath(sshKeyFile)}.pub').readAsString())
-            .trim();
-      }(),
-    );
-    await File(p.absolute('src', 'userdata.yml')).writeAsString(userData);
-
-    // TODO: Inject custom tags here
-    //packerFile['builders'][1]['tags'][''] = '';
-  }
-
-  // Start packer
-  var packer = dexeca(
-    'packer',
-    ['build', '--only', type, '-force', '-'],
-    workingDirectory: p.absolute('src'),
-  );
-
-  // Pipe the Packerfile to packer, converting it to JSON on the fly.
-  packer.stdin.writeln(jsonEncode(packerFile));
-  await packer.stdin.flush();
-  await packer.stdin.close();
-
-  // Wait for packer to finish
-  await packer;
-
-  // Cleanup
-  if (type == 'hyperv-iso') {
-    log('cleanup ks.cfg');
-    await File(p.absolute('src', 'ks.cfg')).delete();
-  }
-  if (type == 'amazon-ebs') {
-    log('cleanup userdata.yml');
-    await File(p.absolute('src', 'userdata.yml')).delete();
-  }
-}
-
-/// Creates a new instance of the built vm image.
-///
-/// If an instance of the same name already exists then it will upgraded
-/// with the latest system disk and configuration. The data disk will be
-/// left untouched.
-///
-/// * [rebuild] If set to true then a new build will always be performed
-///
-/// * [name] The name of new VM to create in Hyper-V.
-///
-/// * [dir] The parent directory where the VM files will be kept.
-///
-/// * [replaceDataDisk] If set to true this will delete all files associated
-///   with the VM (if it alread exists).
-///
-/// * [userName] The username to create as part fo the kickstart installation.
-///
-/// * [sshKeyFile] The ssh key to install against the user that is created.
-///
-/// * [localAppData] The path to the local `AppData` dir.
 Future<void> install([
   bool rebuild = false,
-  String name = 'dev-server',
-  String dir = '~/.hyperv',
   bool replaceDataDisk = false,
-  @Env('USERNAME') String userName = 'packer',
-  String sshKeyFile = '~/.ssh/id_rsa',
-  @Env('LocalAppData') String localAppData,
-  String sshConfigFile = '~/.ssh/config',
-  String domain = 'hyper-v.local',
-  String type = 'hyperv-iso',
-  @Abbr('t') String tag = 'latest',
 ]) async {
-  dir = normalisePath(dir);
+  await uninstall(replaceDataDisk);
 
-  await uninstall(name, dir, replaceDataDisk, localAppData, sshConfigFile,
-      domain, userName);
-
-  var systemDiskSrc = File(p.absolute(
-    'src',
-    'dev-server-${tag}',
-    'Virtual Hard Disks',
-    'packer-hyperv-iso.vhdx',
-  ));
-
-  var dataDiskSrc = File(p.absolute(
-    'src',
-    'dev-server-${tag}',
-    'Virtual Hard Disks',
-    'packer-hyperv-iso-0.vhdx',
-  ));
-
-  if (!await systemDiskSrc.exists() || rebuild) {
-    await build(userName, sshKeyFile, type, tag);
+  switch (Options.type) {
+    case 'hyperv':
+      await hyperv.install(rebuild, replaceDataDisk);
+      break;
+    case 'ec2':
+      await ec2.install(rebuild);
+      break;
   }
 
-  log('registering new instance of vm: ${name}');
-  await powershell('''
-    New-VM -Name "${name}" `
-      -NoVHD `
-      -Generation 2 `
-      -SwitchName "Default Switch" `
-      -Path "${dir}";
-  ''');
-
-  var copyJobs = [
-    systemDiskSrc.copy(p.join(
-      dir,
-      name,
-      'system.vhdx',
-    )),
-  ];
-
-  if (!await File(p.join(dir, name, 'data.vhdx')).exists()) {
-    copyJobs.add(dataDiskSrc.copy(p.join(
-      dir,
-      name,
-      'data.vhdx',
-    )));
-  }
-
-  log('copying src disk images to new instance');
-  await Future.wait(copyJobs);
-
-  log('configuring vm instance');
-  await powershell('''
-    Set-VMProcessor "${name}" `
-      -Count 2 `
-      -ExposeVirtualizationExtensions \$true;
-
-    Set-VMMemory "${name}" `
-      -DynamicMemoryEnabled \$true `
-      -MinimumBytes 64MB `
-      -StartupBytes 256MB `
-      -MaximumBytes 8GB `
-      -Priority 80 `
-      -Buffer 25;
-
-    \$bootDrive = Add-VMHardDiskDrive "${name}" `
-      -Path "${p.join(dir, name, 'system.vhdx')}" `
-      -Passthru;
-
-    Add-VMHardDiskDrive "${name}" `
-      -Path "${p.join(dir, name, 'data.vhdx')}";
-
-    Set-VMFirmware "${name}" `
-      -EnableSecureBoot Off `
-      -FirstBootDevice \$bootDrive;
-
-    Enable-VMIntegrationService "${name}" -Name "Guest Service Interface";
-
-    Set-VM -Name "${name}" `
-      -CheckpointType Disabled `
-      -AutomaticStartAction Start `
-      -AutomaticStopAction Shutdown;
-  ''');
-
-  await start(name);
-  await updateHostsFile(name, domain);
-  await installHostUpdater(name, domain, userName);
-  await installSshConfig(name, domain, sshConfigFile, userName, sshKeyFile);
-  await installWindowsTerminalEntry(name, localAppData);
-  await waitForSsh(name);
-  await setGuestHostname(name, domain);
-  await authorizeGuestToSshToHost(name, domain, userName);
-  await ssh_server.install();
-  await mountNfsShare(name, domain, userName);
-  await executeFirstLogin(name);
+  await ssh.install();
+  await updateHostsFile();
+  await installHostUpdater();
+  await installSshConfig();
+  await installWindowsTerminalEntry();
+  await waitForSsh(Options.name);
+  await setGuestHostname();
+  await authorizeGuestToSshToHost();
+  await mountNfsShare();
+  await executeFirstLogin();
 }
 
-/// Removes an instance of the VM.
-///
-/// * [name] The name of new VM to create in Hyper-V.
-///
-/// * [dir] The parent directory where the VM files will be kept.
-///
-/// * [deleteEverything] If set to true this will delete all files associated
-///   with the VM (if it alread exists), including all disks.
 Future<void> uninstall([
-  String name = 'dev-server',
-  String dir = '~/.hyperv',
   bool deleteEverything = false,
-  @Env('LocalAppData') String localAppData,
-  String sshConfigFile = '~/.ssh/config',
-  String domain = 'hyper-v.local',
-  @Env('USERNAME') String userName = 'packer',
 ]) async {
-  if (await vmExists(name)) {
-    log('unregistering vm: ${name}');
-    await unmountNfsShare(name, domain, userName);
-    await stop(name);
-    await powershell('Remove-VM "${name}" -Force');
+  await ssh.uninstall();
+  await unmountNfsShare();
+  await uninstallHostUpdater();
+  await uninstallSshConfig();
+  await uninstallWindowsTerminalEntry();
+  await unauthorizeGuestToSshToHost();
+
+  switch (Options.type) {
+    case 'hyperv':
+      await hyperv.uninstall(deleteEverything);
+      break;
+    case 'ec2':
+      await ec2.uninstall(deleteEverything);
+      break;
   }
-
-  await uninstallHostUpdater(name);
-  await uninstallSshConfig(name, sshConfigFile);
-  await uninstallWindowsTerminalEntry(name, localAppData);
-  await unauthorizeGuestToSshToHost(name, domain, userName);
-  await ssh_server.uninstall();
-  if (deleteEverything) {
-    log('deleting ${p.join(normalisePath(dir), name)}');
-    await Directory(p.join(normalisePath(dir), name)).delete(recursive: true);
-  }
-}
-
-/// Starts the Virtual Machine
-///
-/// * [name] The name of new VM to start.
-Future<void> start([String name = 'dev-server']) async {
-  log('starting: ${name}');
-  await powershell('Start-VM "${name}"');
-}
-
-/// Stops the Virtual Machine
-///
-/// * [name] The name of new VM to stop.
-Future<void> stop([String name = 'dev-server']) async {
-  log('stopping: ${name}');
-  await powershell('Stop-VM "${name}" -Force');
-}
-
-/// Prints the IP Address of a running VM.
-///
-/// * [name] The name of new VM to query it's IP Address.
-Future<String> ipAddress([String name = 'dev-server']) async {
-  return await retry(() async {
-    try {
-      log('attempting to get ip address of: ${name}');
-
-      var result = await powershell(
-        '''
-        Get-VM "${name}" | `
-          Select-Object -ExpandProperty NetworkAdapters | `
-          Select-Object IPAddresses;
-        ''',
-        inheritStdio: false,
-      );
-
-      var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
-      var ipAddresses = doc.descendants
-          .singleWhere((n) => n.attributes
-              .any((a) => a.name.local == 'N' && a.value == 'IPAddresses'))
-          .children
-          .singleWhere((n) => n is xml.XmlElement && n.name.local == 'LST')
-          .children
-          .map((n) => n.text);
-
-      var address = ipAddresses.first;
-      if (address.contains(':') && !address.contains('.')) {
-        throw Exception('not ipv4');
-      }
-
-      log(address);
-      return ipAddresses.first;
-    } catch (e) {
-      if (e is Exception) rethrow;
-      throw Exception(e);
-    }
-  });
 }
 
 /// Injects a new host file entry for a running VM.
-///
-/// * [name] The name of new VM to add to your hosts file.
 Future<void> updateHostsFile([
-  String name = 'dev-server',
-  String domain = 'hyper-v.local',
   String ip = '',
-  @Env('USERNAME') String userName = 'packer',
   bool dontRunTasks = false,
 ]) async {
-  ip = ip == '' ? await ipAddress(name) : ip;
+  if (ip == '') {
+    switch (Options.type) {
+      case 'hyperv':
+        ip = await hyperv.ipAddress();
+        break;
+      case 'ec2':
+        ip = await ec2.ipAddress();
+        break;
+    }
+  }
 
   if (!await isElevated()) {
     log('elevating to write host file');
 
     await powershell(
       '''
-      ${Platform.resolvedExecutable} ${p.absolute('Makefile.dart')} `
-        update-hosts-file `
-          --name ${name} `
-          --domain ${domain} `
-          --ip ${ip} `
-          --user-name ${userName} `
-          --dont-run-tasks;
+      cd ${Options.repoRoot};
+      drun update-hosts-file `
+        --type ${Options.type} `
+        --name ${Options.name} `
+        --domain ${Options.domain} `
+        --ip ${ip} `
+        --user-name ${Options.userName} `
+        --dont-run-tasks;
       ''',
       elevated: true,
     );
 
-    await clearKnownHosts(name);
+    await clearKnownHosts();
     return;
   }
 
@@ -401,106 +104,80 @@ Future<void> updateHostsFile([
 
   var newLines = [];
   for (var line in await hostsFile.readAsLines()) {
-    if (line.contains(name)) {
+    if (line.contains(Options.name)) {
       continue;
     }
     newLines.add(line);
   }
-  newLines.add('${ip} ${name}.${domain}');
+  newLines.add('${ip} ${Options.name}.${Options.domain}');
 
   log(newLines.join('\n'));
 
   await hostsFile.writeAsString(newLines.join('\r\n'));
 
   if (!dontRunTasks) {
-    await clearKnownHosts(name, 'C:\\Users\\${userName}\\.ssh\\known_hosts');
+    await clearKnownHosts();
   }
 }
 
-/// Injects a new profile into the Windows Terminal Config.
-///
-/// This profile will use SSH to connect to the VM.
-/// see: https://aka.ms/terminal-documentation
-///
-/// * [name] The name of the VM that the new profile should connect to.
-///
-/// * [localAppData] The path to the local `AppData` dir.
-Future<void> installWindowsTerminalEntry([
-  String name = 'dev-server',
-  @Env('LocalAppData') String localAppData,
-]) async {
-  log('installing windows terminal profile for vm: ${name}');
-
-  await updateWindowsTerminalConfig(
-    updater: (config) async {
-      (config['profiles'] as List<dynamic>).insert(0, {
-        'guid': '{${Uuid().v4()}}',
-        'name': name,
-        'commandline': 'ssh ${name}',
-        'hidden': false,
-        'fontSize': 10,
-        'padding': '1',
-        'icon': p.absolute('bash-icon.png'),
-      });
-
-      return config;
-    },
-    localAppData: localAppData,
-  );
-}
-
-/// Removes a profile entry from the Windows Terminal config
-///
-/// * [name] The name of the VM to remove from Windows Terminal
-///
-/// * [localAppData] The path to the local `AppData` dir.
-Future<void> uninstallWindowsTerminalEntry([
-  String name = 'dev-server',
-  @Env('LocalAppData') String localAppData,
-]) async {
-  log('uninstalling windows terminal profile for vm: ${name}');
-
-  await updateWindowsTerminalConfig(
-    updater: (config) async {
-      (config['profiles'] as List<dynamic>)
-          .removeWhere((profile) => profile['name'] == name);
-
-      return config;
-    },
-    localAppData: localAppData,
-  );
-}
-
 /// Removes entries from the SSH known_hosts file.
-///
-/// * [name] The name of the VM that will be removed from the file.
-///
-/// * [knownHostsFile] Location of the file to edit.
-Future<void> clearKnownHosts([
-  String name = 'dev-server',
-  String knownHostsFile = '~/.ssh/known_hosts',
-]) async {
-  log('clearing ${knownHostsFile} file');
+Future<void> clearKnownHosts() async {
+  log('clearing ${Options.sshKnownHostsFile} file');
 
-  var knownHosts = File(normalisePath(knownHostsFile));
+  var knownHosts = File(Options.sshKnownHostsFile);
 
   var newLines = [];
   for (var line in await knownHosts.readAsLines()) {
-    if (line.contains(name)) continue;
+    if (line.contains(Options.name)) continue;
     newLines.add(line);
   }
 
   await knownHosts.writeAsString(newLines.join('\r\n'));
 }
 
+Future<void> mountNfsShare() async {
+  if (!await nfsClientInstalled()) {
+    log('installing nfs client');
+    await powershell('''
+    Enable-WindowsOptionalFeature -FeatureName NFS-Administration -All -Online;
+    Enable-WindowsOptionalFeature -FeatureName ClientForNFS-Infrastructure -All -Online;
+    Enable-WindowsOptionalFeature -FeatureName ServicesForNFS-ClientOnly -All -Online;
+    Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default -Name AnonymousUid -Value 1000 -Type DWord;
+    Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default -Name AnonymousGid -Value 1000 -Type DWord;
+    ''', elevated: true);
+  }
+
+  var mounted =
+      await isNfsMounted(Options.name, Options.domain, Options.userName);
+  if (mounted != null) {
+    log('drive already mounted ${mounted.driveLetter}:\\ => nfs:${mounted.path}');
+    return;
+  }
+
+  var driveLetter = await getNextFreeDriveLetter();
+  var path = '\\\\${Options.name}.${Options.domain}\\home\\${Options.userName}';
+
+  log('mounting drive ${driveLetter}\\ => nfs:${path}');
+  await dexeca(
+    'net',
+    ['use', driveLetter, path, '/persistent:yes'],
+    runInShell: true,
+  );
+}
+
+Future<void> unmountNfsShare() async {
+  var mounted =
+      await isNfsMounted(Options.name, Options.domain, Options.userName);
+  if (mounted == null) {
+    log('could not find a drive to unmount');
+    return;
+  }
+  log('un-mounting ${mounted.driveLetter}:\\');
+  await dexeca('umount', ['${mounted.driveLetter}:', '-f'], runInShell: true);
+}
+
 /// Creates a new Scheduled Task that will run on boot to update the hosts file.
-///
-/// * [name] The name or the VM to create the task for.
-Future<void> installHostUpdater([
-  String name = 'dev-server',
-  String domain = 'hyper-v.local',
-  @Env('USERNAME') String userName = 'packer',
-]) async {
+Future<void> installHostUpdater() async {
   log('install host updater');
 
   await powershell('''
@@ -508,53 +185,45 @@ Future<void> installHostUpdater([
 
     \$Sta = New-ScheduledTaskAction `
       -Execute "${Platform.resolvedExecutable}" `
-      -Argument "${p.absolute('Makefile.dart')} update-hosts-file --name ${name} --domain ${domain} --user-name ${userName}" `
-      -WorkingDirectory "${p.current}";
+      -Argument "${normalisePath('./Makefile.dart')} update-hosts-file --type ${Options.type} --name ${Options.name} --domain ${Options.domain} --user-name ${Options.userName}" `
+      -WorkingDirectory "${normalisePath('./')}";
 
     \$STPrincipal = New-ScheduledTaskPrincipal `
       -UserID "NT AUTHORITY\\SYSTEM" `
       -LogonType ServiceAccount `
       -RunLevel Highest;
 
-    Register-ScheduledTask "VMUpdateHostFile for ${name}" `
+    Register-ScheduledTask "VMUpdateHostFile for ${Options.name}.${Options.domain}" `
       -Principal \$STPrincipal `
       -Trigger \$Stt `
       -Action \$Sta;
-
-    sleep 3;
   ''', elevated: true);
 }
 
 /// Removes the Scheduled Task that runs on boot to update the hosts file.
-Future<void> uninstallHostUpdater([String name = 'dev-server']) async {
+Future<void> uninstallHostUpdater() async {
   log('uninstall host updater');
 
   await powershell('''
-    Unregister-ScheduledTask "VMUpdateHostFile for ${name}" -Confirm:\$false;
+    Unregister-ScheduledTask "VMUpdateHostFile for ${Options.name}.${Options.domain}" -Confirm:\$false;
   ''', elevated: true);
 }
 
 /// Inserts a new entry into ~/.ssh/config
-Future<void> installSshConfig([
-  String name = 'dev-server',
-  String domain = 'hyper-v.local',
-  String sshConfigFile = '~/.ssh/config',
-  @Env('USERNAME') String userName = 'packer',
-  String sshKeyFile = '~/.ssh/id_rsa',
-]) async {
+Future<void> installSshConfig() async {
   log(
-    'inserting a new entry for ${name} into ${normalisePath(sshConfigFile)}',
+    'inserting a new entry for ${Options.name} into ${Options.sshConfigFile}',
   );
 
-  var sshConfig = File(normalisePath(sshConfigFile));
+  var sshConfig = File(Options.sshConfigFile);
   var config = await sshConfig.readAsString();
   config = '''
 ${config}
 
-Host ${name}
-  HostName ${name}.${domain}
-  User ${userName}
-  IdentityFile ${normalisePath(sshKeyFile)}
+Host ${Options.name}
+  HostName ${Options.name}.${Options.domain}
+  User ${Options.userName}
+  IdentityFile ${Options.sshKeyFile}
   StrictHostKeyChecking no
 ''';
 
@@ -562,19 +231,16 @@ Host ${name}
 }
 
 /// Removes an entry from ~/.ssh/config
-Future<void> uninstallSshConfig([
-  String name = 'dev-server',
-  String sshConfigFile = '~/.ssh/config',
-]) async {
-  log('removing the ${name} entry from ${normalisePath(sshConfigFile)}');
+Future<void> uninstallSshConfig() async {
+  log('removing the ${Options.name} entry from ${Options.sshConfigFile}');
 
-  var sshConfig = File(normalisePath(sshConfigFile));
+  var sshConfig = File(Options.sshConfigFile);
 
   var skip = false;
   var newLines = [];
   for (var line in await sshConfig.readAsLines()) {
     if (line.startsWith('Host')) skip = false;
-    if (line == 'Host ${name}' || skip) {
+    if (line == 'Host ${Options.name}' || skip) {
       skip = true;
       continue;
     }
@@ -584,24 +250,44 @@ Future<void> uninstallSshConfig([
   await sshConfig.writeAsString(newLines.join('\r\n'));
 }
 
-/// Logs into the guest and configures it's internal hostname.
+/// Injects a new profile into the Windows Terminal Config.
 ///
-/// This relys on [installSshConfig]
-Future<void> setGuestHostname([
-  String name = 'dev-server',
-  String domain = 'hyper-v.local',
-]) async {
-  log('sudo hostnamectl set-hostname ${name}.${domain}');
+/// This profile will use SSH to connect to the VM.
+/// see: https://aka.ms/terminal-documentation
+Future<void> installWindowsTerminalEntry() async {
+  log('installing windows terminal profile for vm: ${Options.name}');
 
-  await dexeca('ssh', [
-    '-o',
-    'StrictHostKeyChecking=no',
-    name,
-    'sudo',
-    'hostnamectl',
-    'set-hostname',
-    '${name}.${domain}',
-  ]);
+  await updateWindowsTerminalConfig(
+    updater: (config) async {
+      (config['profiles'] as List<dynamic>).insert(0, {
+        'guid': '{${Uuid().v4()}}',
+        'name': Options.name,
+        'commandline': 'ssh ${Options.name}',
+        'hidden': false,
+        'fontSize': 10,
+        'padding': '1',
+        'icon': normalisePath('./bash-icon.png'),
+      });
+
+      return config;
+    },
+    localAppData: Options.localAppData,
+  );
+}
+
+/// Removes a profile entry from the Windows Terminal config
+Future<void> uninstallWindowsTerminalEntry() async {
+  log('uninstalling windows terminal profile for vm: ${Options.name}');
+
+  await updateWindowsTerminalConfig(
+    updater: (config) async {
+      (config['profiles'] as List<dynamic>)
+          .removeWhere((profile) => profile['name'] == Options.name);
+
+      return config;
+    },
+    localAppData: Options.localAppData,
+  );
 }
 
 /// Inserts the guest's public key into the host's authorized_keys file.
@@ -610,18 +296,14 @@ Future<void> setGuestHostname([
 /// `~/.ssh/id_rsa`.
 ///
 /// This relys on [installSshConfig]
-Future<void> authorizeGuestToSshToHost([
-  String name = 'dev-server',
-  String domain = 'hyper-v.local',
-  @Env('USERNAME') String userName = 'packer',
-]) async {
-  var comment = '${userName}@${name}.${domain}';
+Future<void> authorizeGuestToSshToHost() async {
+  var comment = '${Options.userName}@${Options.name}.${Options.domain}';
 
   log('rm -f ~/.ssh/id_rsa');
   await dexeca('ssh', [
     '-o',
     'StrictHostKeyChecking=no',
-    name,
+    Options.name,
     'rm',
     '-f',
     '~/.ssh/id_rsa',
@@ -631,7 +313,7 @@ Future<void> authorizeGuestToSshToHost([
   await dexeca('ssh', [
     '-o',
     'StrictHostKeyChecking=no',
-    name,
+    Options.name,
     'rm',
     '-f',
     '~/.ssh/id_rsa.pub',
@@ -641,7 +323,7 @@ Future<void> authorizeGuestToSshToHost([
   await dexeca('ssh', [
     '-o',
     'StrictHostKeyChecking=no',
-    name,
+    Options.name,
     'ssh-keygen',
     '-t',
     'rsa',
@@ -661,7 +343,7 @@ Future<void> authorizeGuestToSshToHost([
     [
       '-o',
       'StrictHostKeyChecking=no',
-      name,
+      Options.name,
       'cat',
       '~/.ssh/id_rsa.pub',
     ],
@@ -689,12 +371,8 @@ Future<void> authorizeGuestToSshToHost([
 /// `~/.ssh/authorized_keys` file.
 ///
 /// This relys on [installSshConfig]
-Future<void> unauthorizeGuestToSshToHost([
-  String name = 'dev-server',
-  String domain = 'hyper-v.local',
-  @Env('USERNAME') String userName = 'packer',
-]) async {
-  var comment = '${userName}@${name}.${domain}';
+Future<void> unauthorizeGuestToSshToHost() async {
+  var comment = '${Options.userName}@${Options.name}.${Options.domain}';
   var authKeysFile = File(normalisePath('~/.ssh/authorized_keys'));
 
   if (!await authKeysFile.exists()) {
@@ -714,64 +392,34 @@ Future<void> unauthorizeGuestToSshToHost([
   log('removed ${comment} from ${authKeysFile.path}');
 }
 
-Future<void> mountNfsShare([
-  String name = 'dev-server',
-  String domain = 'hyper-v.local',
-  @Env('USERNAME') String userName = 'packer',
-]) async {
-  if (!await nfsClientInstalled()) {
-    log('installing nfs client');
-    await powershell('''
-    Enable-WindowsOptionalFeature -FeatureName NFS-Administration -All -Online;
-    Enable-WindowsOptionalFeature -FeatureName ClientForNFS-Infrastructure -All -Online;
-    Enable-WindowsOptionalFeature -FeatureName ServicesForNFS-ClientOnly -All -Online;
-    Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default -Name AnonymousUid -Value 1000 -Type DWord;
-    Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default -Name AnonymousGid -Value 1000 -Type DWord;
-    ''', elevated: true);
-  }
+/// Logs into the guest and configures it's internal hostname.
+///
+/// This relys on [installSshConfig]
+Future<void> setGuestHostname() async {
+  log('sudo hostnamectl set-hostname ${Options.name}.${Options.domain}');
 
-  var mounted = await isNfsMounted(name, domain, userName);
-  if (mounted != null) {
-    log('drive already mounted ${mounted.driveLetter}:\\ => nfs:${mounted.path}');
-    return;
-  }
-
-  var driveLetter = await getNextFreeDriveLetter();
-  var path = '\\\\${name}.${domain}\\home\\${userName}';
-
-  log('mounting drive ${driveLetter}\\ => nfs:${path}');
-  await dexeca(
-    'net',
-    ['use', driveLetter, path, '/persistent:yes'],
-    runInShell: true,
-  );
+  await dexeca('ssh', [
+    '-o',
+    'StrictHostKeyChecking=no',
+    Options.name,
+    'sudo',
+    'hostnamectl',
+    'set-hostname',
+    '${Options.name}.${Options.domain}',
+  ]);
 }
 
-Future<void> unmountNfsShare([
-  String name = 'dev-server',
-  String domain = 'hyper-v.local',
-  @Env('USERNAME') String userName = 'packer',
-]) async {
-  var mounted = await isNfsMounted(name, domain, userName);
-  if (mounted == null) {
-    log('could not find a drive to unmount');
-    return;
-  }
-  log('un-mounting ${mounted.driveLetter}:\\');
-  await dexeca('umount', ['${mounted.driveLetter}:', '-f'], runInShell: true);
-}
-
-Future<void> executeFirstLogin([String name = 'dev-server']) async {
+Future<void> executeFirstLogin() async {
   await dexeca('scp', [
     '-o',
     'StrictHostKeyChecking=no',
     p.absolute('first-login'),
-    '${name}:/tmp/script',
+    '${Options.name}:/tmp/script',
   ]);
   await dexeca('ssh', [
     '-o',
     'StrictHostKeyChecking=no',
-    name,
+    Options.name,
     'chmod',
     '+x',
     '/tmp/script',
@@ -779,13 +427,13 @@ Future<void> executeFirstLogin([String name = 'dev-server']) async {
   await dexeca('ssh', [
     '-o',
     'StrictHostKeyChecking=no',
-    name,
+    Options.name,
     '/tmp/script',
   ]);
   await dexeca('ssh', [
     '-o',
     'StrictHostKeyChecking=no',
-    name,
+    Options.name,
     'rm',
     '-f',
     '/tmp/script',

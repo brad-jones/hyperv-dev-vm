@@ -230,7 +230,8 @@ $RECYCLE.BIN/
 # End of https://www.gitignore.io/api/go,node,dart,linux,macos,packer,windows
 
 log.txt
-output-*/
 /first-login
 ks.cfg
 userdata.yml
+*.vhd
+*.vhdx

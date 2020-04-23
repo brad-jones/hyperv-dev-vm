@@ -7,15 +7,6 @@ variables:
   ssh_username: packer
   ssh_private_key_file: ~/.ssh/id_rsa
 
-  # The EC2 instance type that will be used for the build,
-  # irrelevant for other builders.
-  instance_type: t3.micro
-
-  # Select a VPC and Subnet to use for the EC2 instance,
-  # irrelevant for other builders.
-  vpc_filter: "*"
-  subnet_filter: "core-network-release-Application0Stack-P9YFNOWQIZGO-SubnetAppWebTierA"
-
 builders:
   - type: hyperv-iso
     iso_url: https://download.fedoraproject.org/pub/fedora/linux/releases/31/Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-31-1.9.iso
@@ -46,38 +37,9 @@ builders:
     headless: false
     output_directory: dev-server-{{user `tag`}}
 
-  - type: amazon-ebs
-    instance_type: "{{user `instance_type`}}"
-    ami_name: dev-server-{{user `tag`}}
-    ami_description: A Linux development environment
-    source_ami_filter:
-      most_recent: true
-      owners: ["125523088429"]
-      filters:
-        architecture: x86_64
-        virtualization-type: hvm
-        root-device-type: ebs
-        name: Fedora-Cloud-Base-31-2020*gp2*
-    force_deregister: true
-    force_delete_snapshot: true
-    user_data_file: ./userdata.yml
-    communicator: ssh
-    ssh_username: "{{user `ssh_username`}}"
-    ssh_private_key_file: "{{user `ssh_private_key_file`}}"
-    vpc_filter:
-      filters:
-        "tag:Name": "{{user `vpc_filter`}}"
-    subnet_filter:
-      most_free: true
-      random: true
-      filters:
-        "tag:Name": "{{user `subnet_filter`}}"
-    tags:
-      Name: dev-server-{{user `tag`}}
-
 provisioners:
   - type: file
-    source: ./resources/
+    source: ../resources/
     destination: /tmp
   - type: shell
     script: provisioner.sh

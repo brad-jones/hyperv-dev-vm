@@ -24,8 +24,8 @@ network --hostname=localhost.localdomain
 
 # Users
 rootpw --lock
-user --groups=wheel --name={{username}} --lock --gecos={{username}}
-sshkey --username {{username}} "{{sshkey}}"
+user --groups=wheel --name={{ssh_username}} --lock --gecos={{ssh_username}}
+sshkey --username {{ssh_username}} "{{ssh_public_key}}"
 
 # Additional options
 eula --accepted

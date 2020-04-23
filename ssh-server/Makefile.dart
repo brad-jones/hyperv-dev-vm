@@ -6,15 +6,19 @@ import 'package:path/path.dart' as p;
 
 Future<void> main(List<String> argv) => drun(argv);
 
+/// Builds an ssh server used to allow the guest vm to connect back to the host.
 Future<void> build() async {
   log('building ssh-server.exe');
   await dexeca(
     'go',
     ['build', '-v'],
-    workingDirectory: p.join(projectRoot(), 'ssh-server'),
+    workingDirectory: normalisePath('./ssh-server'),
   );
 }
 
+/// Using nssm, makes the ssh server run as a Windows background service.
+///
+/// > This assumes you have already installed <https://nssm.cc/>
 Future<void> install() async {
   await build();
   await firewallOpen();
@@ -23,12 +27,12 @@ Future<void> install() async {
   await powershell('''
     nssm stop hyperv-dev-vm-host-sshd confirm;
     nssm remove hyperv-dev-vm-host-sshd confirm;
-    nssm install hyperv-dev-vm-host-sshd "${p.join(projectRoot(), 'ssh-server', 'ssh-server.exe')}";
+    nssm install hyperv-dev-vm-host-sshd "${normalisePath('./ssh-server/ssh-server.exe')}";
     nssm reset hyperv-dev-vm-host-sshd ObjectName;
     nssm set hyperv-dev-vm-host-sshd Type SERVICE_INTERACTIVE_PROCESS;
     nssm set hyperv-dev-vm-host-sshd Start SERVICE_AUTO_START;
-    nssm set hyperv-dev-vm-host-sshd AppStdout "${p.join(projectRoot(), 'ssh-server', 'log.txt')}";
-    nssm set hyperv-dev-vm-host-sshd AppStderr "${p.join(projectRoot(), 'ssh-server', 'log.txt')}";
+    nssm set hyperv-dev-vm-host-sshd AppStdout "${normalisePath('./ssh-server/log.txt')}";
+    nssm set hyperv-dev-vm-host-sshd AppStderr "${normalisePath('./ssh-server/log.txt')}";
     nssm set hyperv-dev-vm-host-sshd AppStopMethodSkip 14;
     nssm set hyperv-dev-vm-host-sshd AppStopMethodConsole 0;
     nssm set hyperv-dev-vm-host-sshd AppKillProcessTree 0;
@@ -41,6 +45,7 @@ Future<void> install() async {
   ''', elevated: true);
 }
 
+/// Stops and removes the nssm background service that runs the ssh server.
 Future<void> uninstall() async {
   await firewallClose();
 
@@ -51,6 +56,7 @@ Future<void> uninstall() async {
   ''', elevated: true);
 }
 
+/// Starts the nssm ssh background service.
 Future<void> start() async {
   log('starting nssm hyperv-dev-vm-host-sshd service');
 
@@ -60,6 +66,7 @@ Future<void> start() async {
   );
 }
 
+/// Stops the nssm ssh background service.
 Future<void> stop() async {
   log('stopping nssm hyperv-dev-vm-host-sshd service');
 
