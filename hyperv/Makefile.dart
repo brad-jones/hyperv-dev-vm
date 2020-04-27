@@ -136,7 +136,7 @@ Future<void> install([
     Set-VMMemory "${Options.name}" `
       -DynamicMemoryEnabled \$true `
       -MinimumBytes 64MB `
-      -StartupBytes 256MB `
+      -StartupBytes 512MB `
       -MaximumBytes 8GB `
       -Priority 80 `
       -Buffer 25;
