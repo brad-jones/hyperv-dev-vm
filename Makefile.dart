@@ -37,15 +37,14 @@ Future<void> install([
   await waitForSsh(Options.name);
   await setGuestHostname();
   await authorizeGuestToSshToHost();
-  await mountNfsShare();
+  if (Options.type == 'hyperv') await mountNfsShare();
   await executeFirstLogin();
 }
 
 Future<void> uninstall([
   bool deleteEverything = false,
 ]) async {
-  await ssh.uninstall();
-  await unmountNfsShare();
+  if (Options.type == 'hyperv') await unmountNfsShare();
   await uninstallHostUpdater();
   await uninstallSshConfig();
   await uninstallWindowsTerminalEntry();
@@ -58,6 +57,10 @@ Future<void> uninstall([
     case 'ec2':
       await ec2.uninstall(deleteEverything);
       break;
+  }
+
+  if (deleteEverything) {
+    await ssh.uninstall();
   }
 }
 

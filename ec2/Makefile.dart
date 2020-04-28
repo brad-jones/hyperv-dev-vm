@@ -48,11 +48,11 @@ Future<void> install([
 ]) async {
   await uninstall(rebuild);
 
-  var amiId = await _getAmiId('${Options.name}-${Options.tag}');
+  var amiId = await _getAmiId('dev-server-${Options.tag}');
   if (amiId == null || rebuild) {
     log('rebuilding image');
     await build();
-    amiId = await _getAmiId('${Options.name}-${Options.tag}');
+    amiId = await _getAmiId('dev-server-${Options.tag}');
   }
 
   log('registering new instance of vm: ${amiId}');
@@ -83,7 +83,7 @@ Future<void> uninstall([bool deleteEverything = false]) async {
 
   if (deleteEverything) {
     log('looking for ami to delete');
-    var amiId = await _getAmiId('${Options.name}-${Options.tag}');
+    var amiId = await _getAmiId('dev-server-${Options.tag}');
     if (amiId != null) {
       log('deleting AMI: ${amiId}');
       await _deleteAmi(amiId);
@@ -196,6 +196,7 @@ Future<String> _getInstanceId(String name) async {
     }
     return null;
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -212,6 +213,7 @@ Future<String> _getInstanceIp(String id) async {
     return jsonDecode(proc.stdout)['Reservations'][0]['Instances'][0]
         ['PrivateIpAddress'];
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -228,6 +230,7 @@ Future<String> _getAmiId(String name) async {
     var result = jsonDecode(proc.stdout);
     return result['Images'].isNotEmpty ? result['Images'][0]['ImageId'] : null;
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -251,6 +254,7 @@ Future<String> _getSnapShotId(String name) async {
         ? result['Snapshots'][0]['SnapshotId']
         : null;
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -274,6 +278,7 @@ Future<String> _getSgId(String name) async {
         ? result['SecurityGroups'][0]['GroupId']
         : null;
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -331,6 +336,7 @@ Future<String> _getVpcId() async {
     log('vpc: ${_vpcId}');
     return _vpcId;
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -352,6 +358,7 @@ Future<String> _getSubnetId(String vpcId) async {
     log('subnet: ${_subnetIds[vpcId]}');
     return _subnetIds[vpcId];
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -380,6 +387,7 @@ Future<String> _createSecurityGroup(String name,
     groupId = jsonDecode(proc.stdout)['GroupId'];
     log('security-group: ${groupId}');
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -460,6 +468,7 @@ Future<dynamic> _launchEc2({
     );
     return jsonDecode(proc.stdout)['Instances'][0]['InstanceId'];
   } on ProcessResult catch (e) {
+    print(e.stdout);
     print(e.stderr);
     rethrow;
   }
@@ -474,19 +483,26 @@ Future<Map<String, String>> _getEnvFromAwsVault(String profile) async {
   if (!_cachedEnv.containsKey(profile ?? '')) {
     var env = <String, String>{};
 
-    var result = await dexeca(
-      'dart',
-      [
-        normalisePath('~/.local/sbin/bin/aws-vault'),
-        'exec',
-        profile,
-        '--',
-        'cmd.exe',
-        '/C',
-        'SET'
-      ],
-      inheritStdio: false,
-    );
+    ProcessResult result;
+    try {
+      result = await dexeca(
+        'dart',
+        [
+          normalisePath('~/.local/sbin/bin/aws-vault'),
+          'exec',
+          profile,
+          '--',
+          'cmd.exe',
+          '/C',
+          'SET'
+        ],
+        inheritStdio: false,
+      );
+    } on ProcessResult catch (e) {
+      print(e.stdout);
+      print(e.stderr);
+      rethrow;
+    }
 
     for (var line in result.stdout.replaceAll('\r\n', '\n').split('\n')) {
       if (line.contains('=') && line.startsWith('AWS_')) {
