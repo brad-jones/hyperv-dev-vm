@@ -1,15 +1,14 @@
 import 'dart:io';
 import 'dart:convert';
-import '../Makefile.opts.dart';
-import './Makefile.utils.dart';
 import 'package:drun/drun.dart';
 import '../Makefile.utils.dart';
 import 'package:retry/retry.dart';
+import '../../Makefile.opts.dart';
+import '../../Makefile.utils.dart';
 import 'package:dexeca/dexeca.dart';
 
 Future<void> main(List<String> argv) => drun(argv);
 
-/// Using `packer` builds a new ec2 AMI Image.
 Future<void> build([
   String instanceType = 't3.micro',
   String vpcFilter = '*',
@@ -17,8 +16,8 @@ Future<void> build([
 ]) async {
   await packerBuild(
     environment: await getEnvFromAwsVault(Options.awsProfile),
-    packerFilePath: normalisePath('./ec2/Packerfile.yml'),
-    tplFilePath: normalisePath('./ec2/userdata.yml.tpl'),
+    packerFilePath: normalisePath('./ec2/servercore/Packerfile.yml'),
+    tplFilePath: normalisePath('./ec2/servercore/userdata.ps1.tpl'),
     variables: {
       'tag': Options.tag,
       'ssh_username': Options.userName,
@@ -47,11 +46,11 @@ Future<void> install([
 ]) async {
   await uninstall(rebuild);
 
-  var amiId = await getAmiId('dev-server-${Options.tag}');
+  var amiId = await getAmiId('dev-servercore-${Options.tag}');
   if (amiId == null || rebuild) {
     log('rebuilding image');
     await build();
-    amiId = await getAmiId('dev-server-${Options.tag}');
+    amiId = await getAmiId('dev-servercore-${Options.tag}');
   }
 
   log('registering new instance of vm: ${amiId}');
@@ -82,7 +81,7 @@ Future<void> uninstall([bool deleteEverything = false]) async {
 
   if (deleteEverything) {
     log('looking for ami to delete');
-    var amiId = await getAmiId('dev-server-${Options.tag}');
+    var amiId = await getAmiId('dev-servercore-${Options.tag}');
     if (amiId != null) {
       log('deleting AMI: ${amiId}');
       await deleteAmi(amiId);

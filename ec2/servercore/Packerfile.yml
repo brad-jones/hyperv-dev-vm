@@ -19,19 +19,20 @@ variables:
 builders:
   - type: amazon-ebs
     instance_type: "{{user `instance_type`}}"
-    ami_name: dev-server-{{user `tag`}}
-    ami_description: A Linux (Fedora) development environment.
+    ami_name: dev-servercore-{{user `tag`}}
+    ami_description: A Windows 2019 Server Core development environment
     source_ami_filter:
       most_recent: true
-      owners: ["125523088429"]
+      owners: ["amazon"]
       filters:
         architecture: x86_64
         virtualization-type: hvm
         root-device-type: ebs
-        name: Fedora-Cloud-Base-31-2020*gp2*
+        platform: windows
+        name: Windows_Server-2019-English-Core-Base*
     force_deregister: true
     force_delete_snapshot: true
-    user_data_file: ./userdata.yml
+    user_data_file: ./userdata.ps1
     communicator: ssh
     ssh_username: "{{user `ssh_username`}}"
     ssh_private_key_file: "{{user `ssh_private_key_file`}}"
@@ -44,11 +45,10 @@ builders:
       filters:
         "tag:Name": "{{user `subnet_filter`}}"
     tags:
-      Name: dev-server-{{user `tag`}}
+      Name: dev-servercore-{{user `tag`}}
 
 provisioners:
-  - type: file
-    source: ../resources/
-    destination: /tmp
-  - type: shell
-    script: provisioner.sh
+  - type: powershell
+    # see: https://github.com/hashicorp/packer/issues/6664
+    execute_command: "$ErrorPreference='Stop';$ProgressPreference='SilentlyContinue';. {{.Vars}};. {{.Path}}; exit $LastExitCode"
+    scripts: provisioner.ps1

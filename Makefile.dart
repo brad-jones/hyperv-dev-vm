@@ -1,16 +1,15 @@
 import 'dart:io';
 import 'dart:async';
-
+import './Makefile.opts.dart';
+import './Makefile.utils.dart';
 import 'package:drun/drun.dart';
 import 'package:uuid/uuid.dart';
 import 'package:dexeca/dexeca.dart';
-import 'package:path/path.dart' as p;
-
-import './Makefile.opts.dart';
-import './Makefile.utils.dart';
 import './ec2/Makefile.dart' as ec2;
+import 'package:path/path.dart' as p;
 import './hyperv/Makefile.dart' as hyperv;
 import './ssh-server/Makefile.dart' as ssh;
+import './ec2/servercore/Makefile.dart' as servercore;
 
 Future<void> main(List<String> argv) => drun(argv);
 
@@ -27,6 +26,9 @@ Future<void> install([
     case 'ec2':
       await ec2.install(rebuild);
       break;
+    case 'servercore':
+      await servercore.install(rebuild);
+      break;
   }
 
   await ssh.install();
@@ -38,7 +40,7 @@ Future<void> install([
   await setGuestHostname();
   await authorizeGuestToSshToHost();
   if (Options.type == 'hyperv') await mountNfsShare();
-  await executeFirstLogin();
+  //await executeFirstLogin();
 }
 
 Future<void> uninstall([
@@ -56,6 +58,9 @@ Future<void> uninstall([
       break;
     case 'ec2':
       await ec2.uninstall(deleteEverything);
+      break;
+    case 'servercore':
+      await servercore.uninstall(deleteEverything);
       break;
   }
 
@@ -76,6 +81,9 @@ Future<void> updateHostsFile([
         break;
       case 'ec2':
         ip = await ec2.ipAddress();
+        break;
+      case 'servercore':
+        ip = await servercore.ipAddress();
         break;
     }
   }
