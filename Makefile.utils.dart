@@ -79,9 +79,8 @@ Future<void> updateWindowsTerminalConfig({
 }) async {
   var configFile = File(p.join(
     localAppData,
-    'Packages',
-    'Microsoft.WindowsTerminal_8wekyb3d8bbwe',
-    'LocalState',
+    'Microsoft',
+    'Windows Terminal',
     'settings.json',
   ));
 

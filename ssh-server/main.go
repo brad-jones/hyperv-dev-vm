@@ -79,7 +79,9 @@ func main() {
 
 	log.Fatal(ssh.ListenAndServe(":"+port,
 		func(s ssh.Session) {
-			log.Printf("executing command: %+v", s.Command())
+			if os.Getenv("SSH_DEBUG") != "" {
+				log.Printf("executing command: %+v", s.Command())
+			}
 
 			executable, err := exec.LookPath(s.Command()[0])
 			if err != nil {
@@ -88,10 +90,14 @@ func main() {
 				io.WriteString(s, msg)
 				return
 			}
-			log.Printf("executable path: %+v", executable)
+			if os.Getenv("SSH_DEBUG") != "" {
+				log.Printf("executable path: %+v", executable)
+			}
 
 			args := strings.Join(s.Command(), " ")
-			log.Printf("args: %+v", args)
+			if os.Getenv("SSH_DEBUG") != "" {
+				log.Printf("args: %+v", args)
+			}
 
 			if err := StartProcessAsCurrentUser(executable, args, ""); err != nil {
 				msg := fmt.Sprintf("failed to start process: %s\n", err)

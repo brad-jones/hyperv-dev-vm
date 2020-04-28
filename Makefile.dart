@@ -259,7 +259,7 @@ Future<void> installWindowsTerminalEntry() async {
 
   await updateWindowsTerminalConfig(
     updater: (config) async {
-      (config['profiles'] as List<dynamic>).insert(0, {
+      (config['profiles']['list'] as List<dynamic>).insert(0, {
         'guid': '{${Uuid().v4()}}',
         'name': Options.name,
         'commandline': 'ssh ${Options.name}',
@@ -281,7 +281,7 @@ Future<void> uninstallWindowsTerminalEntry() async {
 
   await updateWindowsTerminalConfig(
     updater: (config) async {
-      (config['profiles'] as List<dynamic>)
+      (config['profiles']['list'] as List<dynamic>)
           .removeWhere((profile) => profile['name'] == Options.name);
 
       return config;
