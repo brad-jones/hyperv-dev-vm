@@ -161,6 +161,7 @@ Future<void> packerBuild({
   String packerFilePath,
   String tplFilePath,
   Map<String, String> variables,
+  Map<String, String> environment,
   Future<Map<String, dynamic>> Function(Map<String, dynamic>) packerFileMods,
 }) async {
   log('parsing ${packerFilePath}');
@@ -187,6 +188,7 @@ Future<void> packerBuild({
     'packer',
     ['build', '-force', '-'],
     workingDirectory: p.dirname(packerFilePath),
+    environment: environment ?? {},
   );
 
   packer.stdin.writeln(jsonEncode(packerFile));

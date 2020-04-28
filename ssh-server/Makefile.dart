@@ -2,7 +2,6 @@ import 'dart:io';
 import '../Makefile.utils.dart';
 import 'package:drun/drun.dart';
 import 'package:dexeca/dexeca.dart';
-import 'package:path/path.dart' as p;
 
 Future<void> main(List<String> argv) => drun(argv);
 

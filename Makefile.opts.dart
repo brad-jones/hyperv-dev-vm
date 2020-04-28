@@ -52,10 +52,15 @@ class Options extends GlobalOptions {
     return normalisePath(GlobalOptions.value ?? '~/.hyperv');
   }
 
+  @Env('AWS_PROFILE')
+  static String get awsProfile {
+    return GlobalOptions.value;
+  }
+
   @Env('AWS_TAGS')
-  static Map<String, dynamic> get awsTags {
+  static Map<String, String> get awsTags {
     var v = GlobalOptions.value;
-    return v != null ? jsonDecode(v) : null;
+    return v != null ? jsonDecode(v).cast<String, String>() : null;
   }
 
   static String get repoRoot {
