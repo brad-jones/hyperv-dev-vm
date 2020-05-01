@@ -61,6 +61,8 @@ Future<void> uninstall() async {
     nssm stop ${_name()} confirm;
     nssm remove ${_name()} confirm;
   ''', elevated: true);
+
+  await del('./logs/${_name()}.txt');
 }
 
 Future<void> start() async {

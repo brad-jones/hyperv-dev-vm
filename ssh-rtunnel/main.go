@@ -128,6 +128,28 @@ func main() {
 		log.Fatalln(fmt.Printf("Dial INTO remote server error: %s", err))
 	}
 
+	// Killing any previous tunnels on remote server
+	remoteEndpointPort := strings.Split(remoteEndpoint, ":")[1]
+	session, err := conn.NewSession()
+	if err != nil {
+		log.Fatal("Failed to create session: ", err)
+	}
+	defer session.Close()
+	out, err := session.CombinedOutput(fmt.Sprintf("sudo kill $(sudo lsof -t -i:%s)", remoteEndpointPort))
+	if err != nil {
+		if v, ok := err.(*ssh.ExitError); ok {
+			msg := v.Msg()
+			if msg != "" {
+				fmt.Println(v.Error())
+				log.Fatalln(v.Msg())
+			}
+		}
+	}
+	stdout := strings.TrimSpace(string(out))
+	if stdout != "kill: not enough arguments" {
+		fmt.Println("killed old tunnel on remote with pid:", stdout)
+	}
+
 	// Open the remote endpoint
 	log.Println("Opening remote endpoint")
 	listener, err := conn.Listen("tcp", remoteEndpoint)

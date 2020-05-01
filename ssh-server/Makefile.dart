@@ -68,6 +68,8 @@ Future<void> uninstall() async {
     nssm stop ${_NSSM_SERVICE_NAME} confirm;
     nssm remove ${_NSSM_SERVICE_NAME} confirm;
   ''', elevated: true);
+
+  await del('./logs/${_NSSM_SERVICE_NAME}.txt');
 }
 
 /// Starts the nssm ssh background service.

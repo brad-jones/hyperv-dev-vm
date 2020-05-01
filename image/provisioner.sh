@@ -5,7 +5,7 @@ set -euxo pipefail;
 # ------------------------------------------------------------------------------
 sudo dnf update -y;
 sudo dnf groupinstall -y "Development Tools";
-sudo dnf install -y expect rng-tools wget jq tree bash-completion mlocate tar;
+sudo dnf install -y expect rng-tools wget jq tree bash-completion mlocate tar lsof;
 
 # Install dom0.wslhv.local
 # ------------------------------------------------------------------------------
