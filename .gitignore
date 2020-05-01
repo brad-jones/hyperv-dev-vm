@@ -233,5 +233,6 @@ log.txt
 /first-login
 ks.cfg
 userdata.yml
+userdata.ps1
 *.vhd
 *.vhdx

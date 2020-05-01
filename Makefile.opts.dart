@@ -1,23 +1,20 @@
 import 'dart:io';
 import 'dart:convert';
-
+import './Makefile.utils.dart';
 import 'package:drun/drun.dart';
 
-import './Makefile.utils.dart';
-
 class Options extends GlobalOptions {
-  @Values(['hyperv', 'ec2'])
+  @Values(['hv', 'hv-win', 'ec2', 'ec2-win'])
   static String get type {
-    return GlobalOptions.value ?? 'hyperv';
+    return GlobalOptions.value ?? 'hv';
   }
 
   static String get name {
-    return GlobalOptions.value ?? 'dev-server';
+    return GlobalOptions.value ?? 'dev-server-${type}';
   }
 
   static String get domain {
-    return GlobalOptions.value ??
-        (type == 'hyperv' ? 'hyper-v.local' : 'remote');
+    return GlobalOptions.value ?? 'local';
   }
 
   @Abbr('t')
@@ -34,12 +31,20 @@ class Options extends GlobalOptions {
     return normalisePath(GlobalOptions.value ?? '~/.ssh/id_rsa');
   }
 
+  static String get sshConfigFile {
+    return normalisePath(GlobalOptions.value ?? '~/.ssh/config');
+  }
+
   static String get sshKnownHostsFile {
     return normalisePath(GlobalOptions.value ?? '~/.ssh/known_hosts');
   }
 
-  static String get sshConfigFile {
-    return normalisePath(GlobalOptions.value ?? '~/.ssh/config');
+  static String get sshAuthorizedKeysFile {
+    return normalisePath(GlobalOptions.value ?? '~/.ssh/authorized_keys');
+  }
+
+  static String get sshTunnelServiceName {
+    return GlobalOptions.value ?? 'dev-server-ssh-tunnel-${name}';
   }
 
   @Required()

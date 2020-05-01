@@ -43,7 +43,7 @@ Future<void> build([
 
 Future<void> install([
   bool rebuild = false,
-  String instanceSize = 't2.micro',
+  String instanceSize = 't3.micro',
 ]) async {
   await uninstall(rebuild);
 
@@ -168,5 +168,5 @@ Future<String> ipAddress() async {
       if (e is Exception) rethrow;
       throw Exception(e);
     }
-  });
+  }, maxAttempts: 100);
 }

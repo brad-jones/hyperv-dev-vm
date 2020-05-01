@@ -14,8 +14,12 @@ Future<void> main(List<String> argv) => drun(argv);
 ///
 /// Expect to see a UAC prompt as this opens an elevated powershell session.
 Future<void> firewallOpen() async {
-  log('opening firewall for packer');
+  if (await firewallRuleInstalled('packer_http_server')) {
+    log('packer_http_server firewall rule is already installed');
+    return;
+  }
 
+  log('opening firewall for packer');
   await powershell('''
     New-NetFirewallRule `
       -Name packer_http_server `
@@ -45,10 +49,7 @@ Future<void> firewallClose() async {
 
 /// Using `packer` builds a new Hyper-V VM Image.
 Future<void> build() async {
-  if (!await firewallRuleInstalled('packer_http_server')) {
-    await firewallOpen();
-  }
-
+  await firewallOpen();
   await packerBuild(
     packerFilePath: normalisePath('./hyperv/Packerfile.yml'),
     tplFilePath: normalisePath('./hyperv/ks.cfg.tpl'),
@@ -60,6 +61,7 @@ Future<void> build() async {
           (await File('${Options.sshKeyFile}.pub').readAsString()).trim(),
     },
   );
+  await firewallClose();
 }
 
 /// Creates a new Hyper-V instance of the built vm image.
@@ -228,7 +230,7 @@ Future<String> ipAddress() async {
       if (e is Exception) rethrow;
       throw Exception(e);
     }
-  });
+  }, maxAttempts: 100);
 }
 
 Future<bool> _vmExists(String name) async {

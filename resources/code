@@ -7,5 +7,8 @@ if [[ -d "$path" ]]; then
 	fileOrFolder="--folder-uri";
 fi
 
-ssh -o StrictHostKeyChecking=no dom0.hyper-v.local \
+ssh -o StrictHostKeyChecking=no -p 2222 localhost \
 	code ${fileOrFolder} vscode-remote://ssh-remote+${ourHostname}${path};
+
+# Windows version
+# ssh -o StrictHostKeyChecking=no -p 2222 localhost code --folder-uri vscode-remote://ssh-remote+dev-server-ec2-win/c:/users/brad.jones;

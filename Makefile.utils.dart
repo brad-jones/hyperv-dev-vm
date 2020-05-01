@@ -70,7 +70,7 @@ Future<void> waitForSsh(String name) async {
       if (e is Exception) rethrow;
       throw Exception(e);
     }
-  });
+  }, maxAttempts: 20);
 }
 
 Future<void> updateWindowsTerminalConfig({
@@ -234,7 +234,7 @@ void log(String message, {String prefix}) {
 
   var pen = AnsiPen()..xterm(_prefixToColor[prefix]);
   print('${pen(prefix)} | ${message}');
-  File(p.absolute('log.txt')).writeAsStringSync(
+  File(p.absolute(normalisePath('./logs/drun.txt'))).writeAsStringSync(
       '${DateTime.now().toIso8601String()} - ${prefix} | ${message}\n',
       mode: FileMode.append);
 }
@@ -316,3 +316,12 @@ Future<bool> isElevated() async {
   return elevated;
 }
 // -----------------------------------------------------------------------------
+
+Future<bool> nssmServiceExists(String name) async {
+  try {
+    await dexeca('nssm', ['status', name], inheritStdio: false);
+  } on ProcessResult {
+    return false;
+  }
+  return true;
+}

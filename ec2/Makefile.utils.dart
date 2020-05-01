@@ -267,7 +267,7 @@ Future<String> createSecurityGroup(
 Future<dynamic> launchEc2({
   String amiId,
   String name,
-  String type = 't2.micro',
+  String type = 't3.micro',
   Map<String, String> tags,
 }) async {
   try {

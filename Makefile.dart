@@ -9,7 +9,8 @@ import './ec2/Makefile.dart' as ec2;
 import 'package:path/path.dart' as p;
 import './hyperv/Makefile.dart' as hyperv;
 import './ssh-server/Makefile.dart' as ssh;
-import './ec2/servercore/Makefile.dart' as servercore;
+import 'package:prompts/prompts.dart' as prompts;
+import './ec2/servercore/Makefile.dart' as ec2win;
 
 Future<void> main(List<String> argv) => drun(argv);
 
@@ -20,47 +21,49 @@ Future<void> install([
   await uninstall(replaceDataDisk);
 
   switch (Options.type) {
-    case 'hyperv':
+    case 'hv':
       await hyperv.install(rebuild, replaceDataDisk);
       break;
     case 'ec2':
       await ec2.install(rebuild);
       break;
-    case 'servercore':
-      await servercore.install(rebuild);
+    case 'ec2-win':
+      await ec2win.install(rebuild);
       break;
   }
 
-  await ssh.install();
+  await ssh.install(rebuild);
   await updateHostsFile();
-  await installHostUpdater();
+  //await installHostUpdater();
   await installSshConfig();
   await installWindowsTerminalEntry();
   await waitForSsh(Options.name);
   await setGuestHostname();
   await authorizeGuestToSshToHost();
-  if (Options.type == 'hyperv') await mountNfsShare();
+  await installRemoteSshTunnel();
+  //await mountNfsShare();
   //await executeFirstLogin();
 }
 
 Future<void> uninstall([
   bool deleteEverything = false,
 ]) async {
-  if (Options.type == 'hyperv') await unmountNfsShare();
-  await uninstallHostUpdater();
+  //await unmountNfsShare();
+  //await uninstallHostUpdater();
   await uninstallSshConfig();
   await uninstallWindowsTerminalEntry();
   await unauthorizeGuestToSshToHost();
+  await uninstallRemoteSshTunnel();
 
   switch (Options.type) {
-    case 'hyperv':
+    case 'hv':
       await hyperv.uninstall(deleteEverything);
       break;
     case 'ec2':
       await ec2.uninstall(deleteEverything);
       break;
-    case 'servercore':
-      await servercore.uninstall(deleteEverything);
+    case 'ec2-win':
+      await ec2win.uninstall(deleteEverything);
       break;
   }
 
@@ -76,14 +79,14 @@ Future<void> updateHostsFile([
 ]) async {
   if (ip == '') {
     switch (Options.type) {
-      case 'hyperv':
+      case 'hv':
         ip = await hyperv.ipAddress();
         break;
       case 'ec2':
         ip = await ec2.ipAddress();
         break;
-      case 'servercore':
-        ip = await servercore.ipAddress();
+      case 'ec2-win':
+        ip = await ec2win.ipAddress();
         break;
     }
   }
@@ -204,7 +207,7 @@ Future<void> installHostUpdater() async {
       -LogonType ServiceAccount `
       -RunLevel Highest;
 
-    Register-ScheduledTask "VMUpdateHostFile for ${Options.name}.${Options.domain}" `
+    Register-ScheduledTask "HostUpdater for ${Options.name}" `
       -Principal \$STPrincipal `
       -Trigger \$Stt `
       -Action \$Sta;
@@ -216,7 +219,7 @@ Future<void> uninstallHostUpdater() async {
   log('uninstall host updater');
 
   await powershell('''
-    Unregister-ScheduledTask "VMUpdateHostFile for ${Options.name}.${Options.domain}" -Confirm:\$false;
+    Unregister-ScheduledTask "HostUpdater for ${Options.name}" -Confirm:\$false;
   ''', elevated: true);
 }
 
@@ -310,26 +313,6 @@ Future<void> uninstallWindowsTerminalEntry() async {
 Future<void> authorizeGuestToSshToHost() async {
   var comment = '${Options.userName}@${Options.name}.${Options.domain}';
 
-  log('rm -f ~/.ssh/id_rsa');
-  await dexeca('ssh', [
-    '-o',
-    'StrictHostKeyChecking=no',
-    Options.name,
-    'rm',
-    '-f',
-    '~/.ssh/id_rsa',
-  ]);
-
-  log('rm -f ~/.ssh/id_rsa.pub');
-  await dexeca('ssh', [
-    '-o',
-    'StrictHostKeyChecking=no',
-    Options.name,
-    'rm',
-    '-f',
-    '~/.ssh/id_rsa.pub',
-  ]);
-
   log('ssh-keygen -t rsa -b 4096 -C ${comment} -N "" -f ~/.ssh/id_rsa');
   await dexeca('ssh', [
     '-o',
@@ -362,7 +345,7 @@ Future<void> authorizeGuestToSshToHost() async {
   );
 
   var pubKey = result.stdout.trim();
-  var authKeysFile = File(normalisePath('~/.ssh/authorized_keys'));
+  var authKeysFile = File(Options.sshAuthorizedKeysFile);
 
   var newLines = <String>[];
   if (await authKeysFile.exists()) {
@@ -384,7 +367,7 @@ Future<void> authorizeGuestToSshToHost() async {
 /// This relys on [installSshConfig]
 Future<void> unauthorizeGuestToSshToHost() async {
   var comment = '${Options.userName}@${Options.name}.${Options.domain}';
-  var authKeysFile = File(normalisePath('~/.ssh/authorized_keys'));
+  var authKeysFile = File(Options.sshAuthorizedKeysFile);
 
   if (!await authKeysFile.exists()) {
     log('${authKeysFile.path} does not exist, nothign to do');
@@ -407,17 +390,67 @@ Future<void> unauthorizeGuestToSshToHost() async {
 ///
 /// This relys on [installSshConfig]
 Future<void> setGuestHostname() async {
-  log('sudo hostnamectl set-hostname ${Options.name}.${Options.domain}');
+  if (Options.type.endsWith('-win')) {
+    log('not supported');
+  } else {
+    log('sudo hostnamectl set-hostname ${Options.name}.${Options.domain}');
 
-  await dexeca('ssh', [
-    '-o',
-    'StrictHostKeyChecking=no',
-    Options.name,
-    'sudo',
-    'hostnamectl',
-    'set-hostname',
-    '${Options.name}.${Options.domain}',
-  ]);
+    await dexeca('ssh', [
+      '-o',
+      'StrictHostKeyChecking=no',
+      Options.name,
+      'sudo',
+      'hostnamectl',
+      'set-hostname',
+      '${Options.name}.${Options.domain}',
+    ]);
+  }
+}
+
+// sudo kill $(sudo lsof -t -i:2222)
+// https://superuser.com/questions/1194105/ssh-troubleshooting-remote-port-forwarding-failed-for-listen-port-errors
+
+Future<void> installRemoteSshTunnel([bool reInstall = false]) async {
+  if (await nssmServiceExists(Options.sshTunnelServiceName)) {
+    if (reInstall) {
+      await uninstallRemoteSshTunnel();
+    } else {
+      log('ssh tunnel already installed, nothing to do');
+      return;
+    }
+  }
+
+  // the only thing that is stopping us from running this as the SYSTEM user
+  // is the ssh key file permissions :( hence this password prompt.
+  var password = prompts.get('Enter a password', conceal: true);
+
+  log('install nssm ${Options.sshTunnelServiceName} service');
+  var logFile = normalisePath('./logs/${Options.sshTunnelServiceName}.txt');
+  await powershell('''
+    nssm install ${Options.sshTunnelServiceName} "C:\\Users\\${Options.userName}\\scoop\\apps\\win32-openssh\\current\\ssh.exe";
+    nssm set ${Options.sshTunnelServiceName} Start SERVICE_AUTO_START;
+    nssm set ${Options.sshTunnelServiceName} ObjectName "${await whoAmI()}" "${password}";
+    nssm set ${Options.sshTunnelServiceName} AppParameters "-N -R 2222:localhost:22 ${Options.name} -v";
+    nssm set ${Options.sshTunnelServiceName} AppStdout "${logFile}";
+    nssm set ${Options.sshTunnelServiceName} AppStderr "${logFile}";
+    nssm set ${Options.sshTunnelServiceName} AppStopMethodSkip 14;
+    nssm set ${Options.sshTunnelServiceName} AppStopMethodConsole 0;
+    nssm set ${Options.sshTunnelServiceName} AppKillProcessTree 0;
+    nssm start ${Options.sshTunnelServiceName} confirm;
+  ''', elevated: true);
+}
+
+Future<void> uninstallRemoteSshTunnel() async {
+  if (!await nssmServiceExists(Options.sshTunnelServiceName)) {
+    log('ssh tunnel does not exist, nothing to do');
+    return;
+  }
+
+  log('remove nssm ${Options.sshTunnelServiceName} service');
+  await powershell('''
+    nssm stop ${Options.sshTunnelServiceName} confirm;
+    nssm remove ${Options.sshTunnelServiceName} confirm;
+  ''', elevated: true);
 }
 
 Future<void> executeFirstLogin() async {
