@@ -9,8 +9,8 @@ variables:
 
 builders:
   - type: hyperv-iso
-    iso_url: https://download.fedoraproject.org/pub/fedora/linux/releases/31/Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-31-1.9.iso
-    iso_checksum: 559e82173d44d5500739d473a32e2bd24a66a49f0034020f9f86c9d5da6a2c61
+    iso_url: https://download.fedoraproject.org/pub/fedora/linux/releases/32/Everything/x86_64/iso/Fedora-Everything-netinst-x86_64-32-1.6.iso
+    iso_checksum: 7ce4bb4b3e77e2b0c74e5aa3478eef1c26104a7040701f9de3d3a2cb06f6b05d
     iso_checksum_type: sha256
     generation: 2
     disk_size: 200000
@@ -35,11 +35,12 @@ builders:
     shutdown_command: sudo shutdown now
     skip_export: true
     headless: false
-    output_directory: dev-server-{{user `tag`}}
+    output_directory: "{{user `tag`}}"
 
 provisioners:
   - type: file
-    source: ../resources/
+    source: ./resources/
     destination: /tmp
   - type: shell
     script: provisioner.sh
+    timeout: 30m

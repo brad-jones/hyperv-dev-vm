@@ -1,20 +1,14 @@
 import 'dart:io';
-import 'dart:convert';
 import './Makefile.utils.dart';
 import 'package:drun/drun.dart';
 
 class Options extends GlobalOptions {
-  @Values(['hv', 'hv-win', 'ec2', 'ec2-win'])
-  static String get type {
-    return GlobalOptions.value ?? 'hv';
-  }
-
   static String get name {
-    return GlobalOptions.value ?? 'dev-server-${type}';
+    return GlobalOptions.value ?? 'dev-server';
   }
 
   static String get domain {
-    return GlobalOptions.value ?? 'local';
+    return GlobalOptions.value ?? 'wslhv.local';
   }
 
   @Abbr('t')
@@ -43,10 +37,6 @@ class Options extends GlobalOptions {
     return normalisePath(GlobalOptions.value ?? '~/.ssh/authorized_keys');
   }
 
-  static String get sshTunnelServiceName {
-    return GlobalOptions.value ?? 'dev-server-ssh-tunnel-${name}';
-  }
-
   @Required()
   @Env('LOCALAPPDATA')
   static String get localAppData {
@@ -55,17 +45,6 @@ class Options extends GlobalOptions {
 
   static String get hyperVDir {
     return normalisePath(GlobalOptions.value ?? '~/.hyperv');
-  }
-
-  @Env('AWS_PROFILE')
-  static String get awsProfile {
-    return GlobalOptions.value;
-  }
-
-  @Env('AWS_TAGS')
-  static Map<String, String> get awsTags {
-    var v = GlobalOptions.value;
-    return v != null ? jsonDecode(v).cast<String, String>() : null;
   }
 
   static String get repoRoot {

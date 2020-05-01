@@ -229,8 +229,6 @@ $RECYCLE.BIN/
 
 # End of https://www.gitignore.io/api/go,node,dart,linux,macos,packer,windows
 
-log.txt
-/first-login
 ks.cfg
 userdata.yml
 userdata.ps1

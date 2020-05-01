@@ -4,72 +4,205 @@ import './Makefile.opts.dart';
 import './Makefile.utils.dart';
 import 'package:drun/drun.dart';
 import 'package:uuid/uuid.dart';
+import 'package:retry/retry.dart';
 import 'package:dexeca/dexeca.dart';
-import './ec2/Makefile.dart' as ec2;
 import 'package:path/path.dart' as p;
-import './hyperv/Makefile.dart' as hyperv;
-import './ssh-server/Makefile.dart' as ssh;
-import 'package:prompts/prompts.dart' as prompts;
-import './ec2/servercore/Makefile.dart' as ec2win;
+import 'package:xml/xml.dart' as xml;
+import './image/Makefile.dart' as image;
+import './ssh-server/Makefile.dart' as sshServer;
+import './ssh-rtunnel/Makefile.dart' as sshTunnel;
 
 Future<void> main(List<String> argv) => drun(argv);
 
+/// Installs a new instance of the VM image.
+///
+/// * [rebuild] If an VM image already exists it will not normally be built
+///   again unless this flag is set.
+///
+/// * [replaceDataDisk] If an instance already exists then the data disk will
+///   normally not be replaced, you can force the deletion of this disk by using
+///   this flag.
 Future<void> install([
   bool rebuild = false,
   bool replaceDataDisk = false,
 ]) async {
   await uninstall(replaceDataDisk);
 
-  switch (Options.type) {
-    case 'hv':
-      await hyperv.install(rebuild, replaceDataDisk);
-      break;
-    case 'ec2':
-      await ec2.install(rebuild);
-      break;
-    case 'ec2-win':
-      await ec2win.install(rebuild);
-      break;
+  var systemDiskSrc = File(p.join(
+    Options.repoRoot,
+    'image',
+    Options.tag,
+    'Virtual Hard Disks',
+    'packer-hyperv-iso.vhdx',
+  ));
+
+  var dataDiskSrc = File(p.join(
+    Options.repoRoot,
+    'image',
+    Options.tag,
+    'Virtual Hard Disks',
+    'packer-hyperv-iso-0.vhdx',
+  ));
+
+  if (!await systemDiskSrc.exists() || rebuild) {
+    await image.build();
   }
 
-  await ssh.install(rebuild);
+  log('registering new instance of vm: ${Options.name}');
+  await powershell('''
+    New-VM -Name "${Options.name}" `
+      -NoVHD `
+      -Generation 2 `
+      -SwitchName "Default Switch" `
+      -Path "${Options.hyperVDir}";
+  ''');
+
+  var copyJobs = [
+    systemDiskSrc.copy(p.join(
+      Options.hyperVDir,
+      Options.name,
+      'system.vhdx',
+    )),
+  ];
+
+  if (!await File(p.join(Options.hyperVDir, Options.name, 'data.vhdx'))
+      .exists()) {
+    copyJobs.add(dataDiskSrc.copy(p.join(
+      Options.hyperVDir,
+      Options.name,
+      'data.vhdx',
+    )));
+  }
+
+  log('copying src disk images to new instance');
+  await Future.wait(copyJobs);
+
+  log('configuring vm instance');
+  await powershell('''
+    Set-VMProcessor "${Options.name}" `
+      -Count 2 `
+      -ExposeVirtualizationExtensions \$true;
+
+    Set-VMMemory "${Options.name}" `
+      -DynamicMemoryEnabled \$true `
+      -MinimumBytes 64MB `
+      -StartupBytes 512MB `
+      -MaximumBytes 8GB `
+      -Priority 80 `
+      -Buffer 25;
+
+    \$bootDrive = Add-VMHardDiskDrive "${Options.name}" `
+      -Path "${p.join(Options.hyperVDir, Options.name, 'system.vhdx')}" `
+      -Passthru;
+
+    Add-VMHardDiskDrive "${Options.name}" `
+      -Path "${p.join(Options.hyperVDir, Options.name, 'data.vhdx')}";
+
+    Set-VMFirmware "${Options.name}" `
+      -EnableSecureBoot Off `
+      -FirstBootDevice \$bootDrive;
+
+    Enable-VMIntegrationService "${Options.name}" -Name "Guest Service Interface";
+
+    Set-VM -Name "${Options.name}" `
+      -CheckpointType Disabled `
+      -AutomaticStartAction Start `
+      -AutomaticStopAction Shutdown;
+  ''');
+
+  await start();
+  await sshServer.install(rebuild);
   await updateHostsFile();
-  //await installHostUpdater();
+  await installHostUpdater();
   await installSshConfig();
   await installWindowsTerminalEntry();
   await waitForSsh(Options.name);
   await setGuestHostname();
   await authorizeGuestToSshToHost();
-  await installRemoteSshTunnel();
-  //await mountNfsShare();
-  //await executeFirstLogin();
+  await sshTunnel.install();
 }
 
-Future<void> uninstall([
-  bool deleteEverything = false,
-]) async {
-  //await unmountNfsShare();
-  //await uninstallHostUpdater();
+/// Removes an installed instance of the VM image.
+///
+/// * [deleteEverything] If set to true this will delete all files associated
+///   with the VM (if it alread exists), including all disks.
+Future<void> uninstall([bool deleteEverything = false]) async {
+  if (await vmExists(Options.name)) {
+    log('unregistering vm: ${Options.name}');
+    await stop();
+    await powershell('Remove-VM "${Options.name}" -Force');
+  }
+
+  await uninstallHostUpdater();
   await uninstallSshConfig();
   await uninstallWindowsTerminalEntry();
   await unauthorizeGuestToSshToHost();
-  await uninstallRemoteSshTunnel();
-
-  switch (Options.type) {
-    case 'hv':
-      await hyperv.uninstall(deleteEverything);
-      break;
-    case 'ec2':
-      await ec2.uninstall(deleteEverything);
-      break;
-    case 'ec2-win':
-      await ec2win.uninstall(deleteEverything);
-      break;
-  }
+  await sshTunnel.uninstall();
 
   if (deleteEverything) {
-    await ssh.uninstall();
+    await sshServer.uninstall();
+    var dir = p.join(Options.hyperVDir, Options.name);
+    log('deleting ${dir}');
+    await del(dir);
   }
+}
+
+/// Starts the Virtual Machine
+Future<void> start() async {
+  if (!await vmExists(Options.name)) {
+    log('can not start vm as it does not exist');
+    throw Exception('vm not found');
+  }
+  log('starting: ${Options.name}');
+  await powershell('Start-VM "${Options.name}"');
+}
+
+/// Stops the Virtual Machine
+Future<void> stop() async {
+  if (!await vmExists(Options.name)) {
+    log('nothing to do, vm does not exist');
+    return;
+  }
+  log('stopping: ${Options.name}');
+  await powershell('Stop-VM "${Options.name}" -Force');
+}
+
+/// Prints the IP Address of a running VM.
+Future<String> ipAddress() async {
+  return await retry(() async {
+    try {
+      log('attempting to get ip address of: ${Options.name}.${Options.domain}');
+
+      var result = await powershell(
+        '''
+        Get-VM "${Options.name}" | `
+          Select-Object -ExpandProperty NetworkAdapters | `
+          Select-Object IPAddresses;
+        ''',
+        inheritStdio: false,
+      );
+
+      var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
+      var ipAddresses = doc.descendants
+          .singleWhere((n) => n.attributes
+              .any((a) => a.name.local == 'N' && a.value == 'IPAddresses'))
+          .children
+          .singleWhere((n) => n is xml.XmlElement && n.name.local == 'LST')
+          .children
+          .map((n) => n.text);
+
+      var address = ipAddresses.first;
+      if (address.contains(':') && !address.contains('.')) {
+        throw Exception('not ipv4');
+      }
+
+      log(address);
+      return ipAddresses.first;
+    } catch (e) {
+      if (e is Exception) rethrow;
+      throw Exception(e);
+    }
+  }, maxAttempts: 100);
 }
 
 /// Injects a new host file entry for a running VM.
@@ -78,17 +211,7 @@ Future<void> updateHostsFile([
   bool dontRunTasks = false,
 ]) async {
   if (ip == '') {
-    switch (Options.type) {
-      case 'hv':
-        ip = await hyperv.ipAddress();
-        break;
-      case 'ec2':
-        ip = await ec2.ipAddress();
-        break;
-      case 'ec2-win':
-        ip = await ec2win.ipAddress();
-        break;
-    }
+    ip = await ipAddress();
   }
 
   if (!await isElevated()) {
@@ -98,7 +221,6 @@ Future<void> updateHostsFile([
       '''
       cd ${Options.repoRoot};
       drun update-hosts-file `
-        --type ${Options.type} `
         --name ${Options.name} `
         --domain ${Options.domain} `
         --ip ${ip} `
@@ -149,57 +271,16 @@ Future<void> clearKnownHosts() async {
   await knownHosts.writeAsString(newLines.join('\r\n'));
 }
 
-Future<void> mountNfsShare() async {
-  if (!await nfsClientInstalled()) {
-    log('installing nfs client');
-    await powershell('''
-    Enable-WindowsOptionalFeature -FeatureName NFS-Administration -All -Online;
-    Enable-WindowsOptionalFeature -FeatureName ClientForNFS-Infrastructure -All -Online;
-    Enable-WindowsOptionalFeature -FeatureName ServicesForNFS-ClientOnly -All -Online;
-    Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default -Name AnonymousUid -Value 1000 -Type DWord;
-    Set-ItemProperty -Path HKLM:\\SOFTWARE\\Microsoft\\ClientForNFS\\CurrentVersion\\Default -Name AnonymousGid -Value 1000 -Type DWord;
-    ''', elevated: true);
-  }
-
-  var mounted =
-      await isNfsMounted(Options.name, Options.domain, Options.userName);
-  if (mounted != null) {
-    log('drive already mounted ${mounted.driveLetter}:\\ => nfs:${mounted.path}');
-    return;
-  }
-
-  var driveLetter = await getNextFreeDriveLetter();
-  var path = '\\\\${Options.name}.${Options.domain}\\home\\${Options.userName}';
-
-  log('mounting drive ${driveLetter}\\ => nfs:${path}');
-  await dexeca(
-    'net',
-    ['use', driveLetter, path, '/persistent:yes'],
-    runInShell: true,
-  );
-}
-
-Future<void> unmountNfsShare() async {
-  var mounted =
-      await isNfsMounted(Options.name, Options.domain, Options.userName);
-  if (mounted == null) {
-    log('could not find a drive to unmount');
-    return;
-  }
-  log('un-mounting ${mounted.driveLetter}:\\');
-  await dexeca('umount', ['${mounted.driveLetter}:', '-f'], runInShell: true);
-}
-
 /// Creates a new Scheduled Task that will run on boot to update the hosts file.
 Future<void> installHostUpdater() async {
-  log('install host updater');
+  log('Register-ScheduledTask wslhv-host-updater-${Options.name}');
 
   await powershell('''
     \$Stt = New-ScheduledTaskTrigger -AtStartup;
 
     \$Sta = New-ScheduledTaskAction `
       -Execute "${Platform.resolvedExecutable}" `
-      -Argument "${normalisePath('./Makefile.dart')} update-hosts-file --type ${Options.type} --name ${Options.name} --domain ${Options.domain} --user-name ${Options.userName}" `
+      -Argument "${normalisePath('./Makefile.dart')} update-hosts-file --name ${Options.name} --domain ${Options.domain} --user-name ${Options.userName}" `
       -WorkingDirectory "${normalisePath('./')}";
 
     \$STPrincipal = New-ScheduledTaskPrincipal `
@@ -207,7 +288,7 @@ Future<void> installHostUpdater() async {
       -LogonType ServiceAccount `
       -RunLevel Highest;
 
-    Register-ScheduledTask "HostUpdater for ${Options.name}" `
+    Register-ScheduledTask "wslhv-host-updater-${Options.name}" `
       -Principal \$STPrincipal `
       -Trigger \$Stt `
       -Action \$Sta;
@@ -216,10 +297,10 @@ Future<void> installHostUpdater() async {
 
 /// Removes the Scheduled Task that runs on boot to update the hosts file.
 Future<void> uninstallHostUpdater() async {
-  log('uninstall host updater');
+  log('Unregister-ScheduledTask wslhv-host-updater-${Options.name}');
 
   await powershell('''
-    Unregister-ScheduledTask "HostUpdater for ${Options.name}" -Confirm:\$false;
+    Unregister-ScheduledTask "wslhv-host-updater-${Options.name}" -Confirm:\$false;
   ''', elevated: true);
 }
 
@@ -277,9 +358,6 @@ Future<void> installWindowsTerminalEntry() async {
         'guid': '{${Uuid().v4()}}',
         'name': Options.name,
         'commandline': 'ssh ${Options.name}',
-        'hidden': false,
-        'fontSize': 10,
-        'padding': '1',
         'icon': normalisePath('./bash-icon.png'),
       });
 
@@ -390,96 +468,15 @@ Future<void> unauthorizeGuestToSshToHost() async {
 ///
 /// This relys on [installSshConfig]
 Future<void> setGuestHostname() async {
-  if (Options.type.endsWith('-win')) {
-    log('not supported');
-  } else {
-    log('sudo hostnamectl set-hostname ${Options.name}.${Options.domain}');
+  log('sudo hostnamectl set-hostname ${Options.name}.${Options.domain}');
 
-    await dexeca('ssh', [
-      '-o',
-      'StrictHostKeyChecking=no',
-      Options.name,
-      'sudo',
-      'hostnamectl',
-      'set-hostname',
-      '${Options.name}.${Options.domain}',
-    ]);
-  }
-}
-
-// sudo kill $(sudo lsof -t -i:2222)
-// https://superuser.com/questions/1194105/ssh-troubleshooting-remote-port-forwarding-failed-for-listen-port-errors
-
-Future<void> installRemoteSshTunnel([bool reInstall = false]) async {
-  if (await nssmServiceExists(Options.sshTunnelServiceName)) {
-    if (reInstall) {
-      await uninstallRemoteSshTunnel();
-    } else {
-      log('ssh tunnel already installed, nothing to do');
-      return;
-    }
-  }
-
-  // the only thing that is stopping us from running this as the SYSTEM user
-  // is the ssh key file permissions :( hence this password prompt.
-  var password = prompts.get('Enter a password', conceal: true);
-
-  log('install nssm ${Options.sshTunnelServiceName} service');
-  var logFile = normalisePath('./logs/${Options.sshTunnelServiceName}.txt');
-  await powershell('''
-    nssm install ${Options.sshTunnelServiceName} "C:\\Users\\${Options.userName}\\scoop\\apps\\win32-openssh\\current\\ssh.exe";
-    nssm set ${Options.sshTunnelServiceName} Start SERVICE_AUTO_START;
-    nssm set ${Options.sshTunnelServiceName} ObjectName "${await whoAmI()}" "${password}";
-    nssm set ${Options.sshTunnelServiceName} AppParameters "-N -R 2222:localhost:22 ${Options.name} -v";
-    nssm set ${Options.sshTunnelServiceName} AppStdout "${logFile}";
-    nssm set ${Options.sshTunnelServiceName} AppStderr "${logFile}";
-    nssm set ${Options.sshTunnelServiceName} AppStopMethodSkip 14;
-    nssm set ${Options.sshTunnelServiceName} AppStopMethodConsole 0;
-    nssm set ${Options.sshTunnelServiceName} AppKillProcessTree 0;
-    nssm start ${Options.sshTunnelServiceName} confirm;
-  ''', elevated: true);
-}
-
-Future<void> uninstallRemoteSshTunnel() async {
-  if (!await nssmServiceExists(Options.sshTunnelServiceName)) {
-    log('ssh tunnel does not exist, nothing to do');
-    return;
-  }
-
-  log('remove nssm ${Options.sshTunnelServiceName} service');
-  await powershell('''
-    nssm stop ${Options.sshTunnelServiceName} confirm;
-    nssm remove ${Options.sshTunnelServiceName} confirm;
-  ''', elevated: true);
-}
-
-Future<void> executeFirstLogin() async {
-  await dexeca('scp', [
-    '-o',
-    'StrictHostKeyChecking=no',
-    p.absolute('first-login'),
-    '${Options.name}:/tmp/script',
-  ]);
   await dexeca('ssh', [
     '-o',
     'StrictHostKeyChecking=no',
     Options.name,
-    'chmod',
-    '+x',
-    '/tmp/script',
-  ]);
-  await dexeca('ssh', [
-    '-o',
-    'StrictHostKeyChecking=no',
-    Options.name,
-    '/tmp/script',
-  ]);
-  await dexeca('ssh', [
-    '-o',
-    'StrictHostKeyChecking=no',
-    Options.name,
-    'rm',
-    '-f',
-    '/tmp/script',
+    'sudo',
+    'hostnamectl',
+    'set-hostname',
+    '${Options.name}.${Options.domain}',
   ]);
 }

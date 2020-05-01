@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+# This is a bash script that opens VsCode on the host system as if you had
+# executed the command on the native windows shell.
+#
+# It achieves this by opening an ssh connection to the `ssh-server` project
+# which can either be accessed via `dom0.wslhv.local` if you open your
+# windows firewall to allow the connection or via a reverse SSH tunnel.
+#
+# At the expense of some overhead, the reverse SSH tunnel is a more portable,
+# more secure option and is what we do by default now.
+
+path="$(realpath $@)";
+ourHostname="$(hostname | cut -d "." -f1)";
+
+fileOrFolder="--file-uri";
+if [[ -d "$path" ]]; then
+	fileOrFolder="--folder-uri";
+fi
+
+ssh -o StrictHostKeyChecking=no -p 2222 localhost \
+	code ${fileOrFolder} vscode-remote://ssh-remote+${ourHostname}${path};

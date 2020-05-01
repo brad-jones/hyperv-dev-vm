@@ -2,9 +2,8 @@ import 'dart:io';
 import 'dart:cli';
 import 'dart:math';
 import 'dart:convert';
-
 import 'package:utf/utf.dart';
-import 'package:yaml/yaml.dart';
+import './Makefile.opts.dart';
 import 'package:retry/retry.dart';
 import 'package:dexeca/dexeca.dart';
 import 'package:recase/recase.dart';
@@ -13,8 +12,6 @@ import 'package:xml/xml.dart' as xml;
 import 'package:ansicolor/ansicolor.dart';
 import 'package:pretty_json/pretty_json.dart';
 import 'package:stack_trace/stack_trace.dart';
-
-import './Makefile.opts.dart';
 
 String normalisePath(String input) {
   return p.normalize(
@@ -35,6 +32,20 @@ Future<String> getToolVersion(String tool) async {
       .trim();
 }
 
+Future<void> del(String path) async {
+  path = normalisePath(path);
+
+  if (await Directory(path).exists()) {
+    await Directory(path).delete(recursive: true);
+    return;
+  }
+
+  if (await File(path).exists()) {
+    await File(path).delete(recursive: true);
+    return;
+  }
+}
+
 Future<String> whoAmI() async {
   var result = await powershell('whoami', inheritStdio: false);
   var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
@@ -50,6 +61,24 @@ Future<bool> firewallRuleInstalled(String name) async {
       'Get-NetFirewallRule ${name}',
       inheritStdio: false,
     );
+  } on ProcessResult {
+    return false;
+  }
+  return true;
+}
+
+Future<bool> nssmServiceExists(String name) async {
+  try {
+    await dexeca('nssm', ['status', name], inheritStdio: false);
+  } on ProcessResult {
+    return false;
+  }
+  return true;
+}
+
+Future<bool> vmExists(String name) async {
+  try {
+    await powershell('Get-VM "${name}"', inheritStdio: false);
   } on ProcessResult {
     return false;
   }
@@ -105,102 +134,6 @@ Future<void> updateWindowsTerminalConfig({
   );
 }
 
-Future<bool> nfsClientInstalled() async {
-  try {
-    await powershell(
-      'nfsadmin.exe client /?',
-      inheritStdio: false,
-    );
-  } on ProcessResult {
-    return false;
-  }
-  return true;
-}
-
-Future<String> getNextFreeDriveLetter() async {
-  var result = await powershell(
-    'ls function:[d-z]: -n | ?{ !(test-path \$_) } | select -First 1',
-    inheritStdio: false,
-  );
-  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
-  return doc.descendants
-      .singleWhere((n) =>
-          n.attributes.any((a) => a.name.local == 'S' && a.value == 'Output'))
-      .text;
-}
-
-class Mounted {
-  final String driveLetter;
-  final String path;
-  const Mounted(this.driveLetter, this.path);
-}
-
-Future<Mounted> isNfsMounted(
-  String name,
-  String domain,
-  String userName,
-) async {
-  var path = '\\\\${name}.${domain}\\home\\${userName}';
-  var result = await powershell('Get-PSDrive', inheritStdio: false);
-  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
-  var mount = doc.descendants
-      .where((n) => n.attributes
-          .any((a) => a.name.local == 'N' && a.value == 'DisplayRoot'))
-      .where((n) => n.text == path);
-  if (mount.isEmpty) {
-    return null;
-  }
-  var driveLetter = mount.first.parent.children
-      .singleWhere((n) =>
-          n.attributes.any((a) => a.name.local == 'N' && a.value == 'Name'))
-      .text;
-  return Mounted(driveLetter, path);
-}
-
-Future<void> packerBuild({
-  String packerFilePath,
-  String tplFilePath,
-  Map<String, String> variables,
-  Map<String, String> environment,
-  Future<Map<String, dynamic>> Function(Map<String, dynamic>) packerFileMods,
-}) async {
-  log('parsing ${packerFilePath}');
-  Map<String, dynamic> packerFile = json.decode(json.encode(loadYaml(
-    await File(packerFilePath).readAsString(),
-  )));
-
-  log('injecting variables into packerfile');
-  packerFile['min_packer_version'] = await getToolVersion('packer');
-  for (var e in variables.entries) {
-    packerFile['variables'][e.key] = e.value;
-  }
-  if (packerFileMods != null) packerFile = await packerFileMods(packerFile);
-
-  log('generating ${tplFilePath} => ${tplFilePath.replaceFirst('.tpl', '')}');
-  var tpl = await File(tplFilePath).readAsString();
-  for (var e in variables.entries) {
-    tpl = tpl.replaceAll('{{${e.key}}}', e.value);
-  }
-  await File(tplFilePath.replaceFirst('.tpl', '')).writeAsString(tpl);
-
-  log('starting packer');
-  var packer = dexeca(
-    'packer',
-    ['build', '-force', '-'],
-    workingDirectory: p.dirname(packerFilePath),
-    environment: environment ?? {},
-  );
-
-  packer.stdin.writeln(jsonEncode(packerFile));
-  await packer.stdin.flush();
-  await packer.stdin.close();
-
-  await packer;
-
-  log('cleanup ${tplFilePath.replaceFirst('.tpl', '')}');
-  await File(tplFilePath.replaceFirst('.tpl', '')).delete();
-}
-
 // prefix: TURN THIS INTO A STANDALONE DART PACKAGE
 // -----------------------------------------------------------------------------
 void log(String message, {String prefix}) {
@@ -234,6 +167,7 @@ void log(String message, {String prefix}) {
 
   var pen = AnsiPen()..xterm(_prefixToColor[prefix]);
   print('${pen(prefix)} | ${message}');
+  Directory(normalisePath('./logs')).createSync(recursive: true);
   File(p.absolute(normalisePath('./logs/drun.txt'))).writeAsStringSync(
       '${DateTime.now().toIso8601String()} - ${prefix} | ${message}\n',
       mode: FileMode.append);
@@ -316,12 +250,3 @@ Future<bool> isElevated() async {
   return elevated;
 }
 // -----------------------------------------------------------------------------
-
-Future<bool> nssmServiceExists(String name) async {
-  try {
-    await dexeca('nssm', ['status', name], inheritStdio: false);
-  } on ProcessResult {
-    return false;
-  }
-  return true;
-}

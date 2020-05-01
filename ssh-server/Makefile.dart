@@ -2,8 +2,9 @@ import 'dart:io';
 import '../Makefile.utils.dart';
 import 'package:drun/drun.dart';
 import 'package:dexeca/dexeca.dart';
+import 'package:path/path.dart' as p;
 
-const _NSSM_SERVICE_NAME = 'dev-server-ssh-reciever';
+const _NSSM_SERVICE_NAME = 'wslhv-ssh-server';
 
 Future<void> main(List<String> argv) => drun(argv);
 
@@ -25,12 +26,15 @@ Future<void> install([bool reInstall = false]) async {
     if (reInstall) {
       await uninstall();
     } else {
-      log('ssh server already installed, nothing to do');
+      log('${_NSSM_SERVICE_NAME} already installed, nothing to do');
       return;
     }
   }
 
   await build();
+
+  var logFile = normalisePath('./logs/${_NSSM_SERVICE_NAME}.txt');
+  await Directory(p.dirname(logFile)).create(recursive: true);
 
   log('install nssm ${_NSSM_SERVICE_NAME} service');
   await powershell('''
@@ -38,8 +42,8 @@ Future<void> install([bool reInstall = false]) async {
     nssm reset ${_NSSM_SERVICE_NAME} ObjectName;
     nssm set ${_NSSM_SERVICE_NAME} Type SERVICE_INTERACTIVE_PROCESS;
     nssm set ${_NSSM_SERVICE_NAME} Start SERVICE_AUTO_START;
-    nssm set ${_NSSM_SERVICE_NAME} AppStdout "${normalisePath('./logs/ssh-server.txt')}";
-    nssm set ${_NSSM_SERVICE_NAME} AppStderr "${normalisePath('./logs/ssh-server.txt')}";
+    nssm set ${_NSSM_SERVICE_NAME} AppStdout "${logFile}";
+    nssm set ${_NSSM_SERVICE_NAME} AppStderr "${logFile}";
     nssm set ${_NSSM_SERVICE_NAME} AppStopMethodSkip 14;
     nssm set ${_NSSM_SERVICE_NAME} AppStopMethodConsole 0;
     nssm set ${_NSSM_SERVICE_NAME} AppKillProcessTree 0;
@@ -55,7 +59,7 @@ Future<void> install([bool reInstall = false]) async {
 /// Stops and removes the nssm background service that runs the ssh server.
 Future<void> uninstall() async {
   if (!await nssmServiceExists(_NSSM_SERVICE_NAME)) {
-    log('ssh server does not exist, nothing to do');
+    log('${_NSSM_SERVICE_NAME} does not exist, nothing to do');
     return;
   }
 
