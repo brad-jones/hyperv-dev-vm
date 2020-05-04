@@ -9,6 +9,7 @@ import 'package:dexeca/dexeca.dart';
 import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart' as xml;
 import './image/Makefile.dart' as image;
+import './sshfs-win/Makefile.dart' as sshfsWin;
 import './ssh-server/Makefile.dart' as sshServer;
 import './ssh-rtunnel/Makefile.dart' as sshTunnel;
 
@@ -120,6 +121,7 @@ Future<void> install([
   await setGuestHostname();
   await authorizeGuestToSshToHost();
   await sshTunnel.install();
+  await sshfsWin.install();
 }
 
 /// Removes an installed instance of the VM image.
@@ -138,6 +140,7 @@ Future<void> uninstall([bool deleteEverything = false]) async {
   await uninstallWindowsTerminalEntry();
   await unauthorizeGuestToSshToHost();
   await sshTunnel.uninstall();
+  await sshfsWin.uninstall();
 
   if (deleteEverything) {
     await sshServer.uninstall();

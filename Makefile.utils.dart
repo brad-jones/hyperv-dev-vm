@@ -55,6 +55,93 @@ Future<String> whoAmI() async {
       .text;
 }
 
+Future<String> getNextFreeDriveLetter() async {
+  var result = await powershell(
+    'ls function:[d-z]: -n | ?{ !(test-path \$_) } | select -First 1',
+    inheritStdio: false,
+  );
+  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
+  return doc.descendants
+      .singleWhere((n) =>
+          n.attributes.any((a) => a.name.local == 'S' && a.value == 'Output'))
+      .text;
+}
+
+Future<bool> cmdExists(String name) async {
+  var result = await powershell('''
+    function Test-CommandExists {
+      param(\$Command);
+      \$oldPreference = \$ErrorActionPreference;
+      \$ErrorActionPreference = 'stop';
+      try {if(Get-Command \$Command){return \$true}}
+      catch {return \$false}
+      finally {\$ErrorActionPreference=\$oldPreference}
+    }
+    Test-CommandExists -Command "${name}" | Write-Output;
+    ''', inheritStdio: false);
+  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
+  return doc.descendants
+          .singleWhere((n) => n.attributes
+              .any((a) => a.name.local == 'S' && a.value == 'Output'))
+          .text ==
+      'true';
+}
+
+Future<bool> scoopPackageExists(String name) async {
+  var result = await powershell('scoop list ${name}', inheritStdio: false);
+  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
+  return doc.descendants
+      .where((n) =>
+          n.attributes.any((a) => a.name.local == 'S' && a.value == 'Output'))
+      .any((n) => n.text.trim() == name);
+}
+
+Future<bool> scoopBucketExists(String name) async {
+  var result = await powershell('scoop bucket list', inheritStdio: false);
+  var doc = xml.parse(result.stdout.replaceFirst('#< CLIXML', ''));
+  return doc.descendants
+      .where((n) =>
+          n.attributes.any((a) => a.name.local == 'S' && a.value == 'Output'))
+      .any((n) => n.text.trim() == name);
+}
+
+Future<void> installScoop() async {
+  if (await cmdExists('scoop')) {
+    log('scoop in already installed, nothing to do');
+    return;
+  }
+
+  await powershell('''
+    Set-ExecutionPolicy RemoteSigned -scope CurrentUser;
+    iwr -useb get.scoop.sh | iex;
+  ''');
+}
+
+Future<void> installScoopPackage(
+  String name, {
+  String version,
+  String bucket,
+}) async {
+  await installScoop();
+
+  if (bucket != null) {
+    if (await scoopBucketExists(bucket)) {
+      log('scoop bucket ${bucket} already exists, nothing to do');
+    } else {
+      log('adding scoop bucket ${bucket}');
+      await powershell('scoop bucket add ${bucket}');
+    }
+  }
+
+  if (await scoopPackageExists(name)) {
+    log('scoop package ${name} already installed, nothing to do');
+    return;
+  }
+
+  version = version == null ? '' : '@${version}';
+  await powershell('scoop install ${name}${version}');
+}
+
 Future<bool> firewallRuleInstalled(String name) async {
   try {
     await powershell(
