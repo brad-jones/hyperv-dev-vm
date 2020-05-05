@@ -40,6 +40,8 @@ func parseSSHKey(file string) ssh.AuthMethod {
 }
 
 func handleClient(client net.Conn, remote net.Conn) {
+	log.Println("transferring data")
+
 	defer client.Close()
 	chDone := make(chan bool)
 
@@ -65,7 +67,7 @@ func handleClient(client net.Conn, remote net.Conn) {
 }
 
 func main() {
-	// Listen for interrupt and die
+	// Handle interrupts
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -74,15 +76,16 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// Read in config from environment
+	// Configure the remote ssh server we will connect to
 	var remoteServer string
 	if os.Getenv("REMOTE_SERVER") != "" {
 		remoteServer = os.Getenv("REMOTE_SERVER")
 	} else {
-		remoteServer = "dev-server.hyper-v.local:22"
+		remoteServer = "dev-server.wslhv.local:22"
 	}
 	log.Printf("remoteServer: %s\n", remoteServer)
 
+	// Configure the username used to authenticate with the remote server
 	var remoteServerUser string
 	if os.Getenv("REMOTE_SERVER_USER") != "" {
 		remoteServerUser = os.Getenv("REMOTE_SERVER_USER")
@@ -91,6 +94,7 @@ func main() {
 	}
 	log.Printf("remoteServerUser: %s\n", remoteServerUser)
 
+	// Configure the ssh key file path that will be used to authenticate with the remote server
 	var remoteServerKey string
 	if os.Getenv("REMOTE_SERVER_KEY") != "" {
 		remoteServerKey = os.Getenv("REMOTE_SERVER_KEY")
@@ -99,14 +103,16 @@ func main() {
 	}
 	log.Printf("remoteServerKey: %s\n", remoteServerKey)
 
+	// Configure the local endpoint that the remote server will have access to
 	var localEndpoint string
 	if os.Getenv("LOCAL_ENDPOINT") != "" {
 		localEndpoint = os.Getenv("LOCAL_ENDPOINT")
 	} else {
-		localEndpoint = "127.0.0.1:22"
+		localEndpoint = "127.0.0.1:2222"
 	}
 	log.Printf("localEndpoint: %s\n", localEndpoint)
 
+	// Configure the remote endpoint that the remote server will be able to access the local endpoint on
 	var remoteEndpoint string
 	if os.Getenv("REMOTE_ENDPOINT") != "" {
 		remoteEndpoint = os.Getenv("REMOTE_ENDPOINT")
@@ -129,6 +135,9 @@ func main() {
 	}
 
 	// Killing any previous tunnels on remote server
+	// Sometimes old tunnels can hang (not sure why) but this will make sure
+	// they die before we attempt to bring up a new tunnel that would otherwise
+	// fail because the port is already in use.
 	remoteEndpointPort := strings.Split(remoteEndpoint, ":")[1]
 	session, err := conn.NewSession()
 	if err != nil {
@@ -175,7 +184,6 @@ func main() {
 		}
 
 		// Copy io from remote to local
-		log.Println("transferring data")
-		handleClient(client, local)
+		go handleClient(client, local)
 	}
 }

@@ -14,6 +14,11 @@ sudo dnf install -y expect rng-tools wget jq tree bash-completion mlocate tar ls
 # at boot time called: `dom0.wslhv.local`.
 #
 # > Keep in mind you need to allow access through the Windows firewall.
+#
+# UPDATE: For all access to the host system we now make use of SSH reverse
+# tunnels. I am leaving this in place for the moment in case the reverse
+# tunnels create too much overhead or there are future services which do
+# not work over the tunnels but for now this is not really used.
 sudo cp /tmp/set-default-gateway-host /usr/local/bin/set-default-gateway-host;
 sudo cp /tmp/set-default-gateway-host.service /etc/systemd/system/set-default-gateway-host.service;
 sudo chmod +x /usr/local/bin/set-default-gateway-host;
@@ -26,18 +31,25 @@ sudo systemctl enable \
 # Install vscode shortcut
 # ------------------------------------------------------------------------------
 # This is a bash script that opens VsCode on the host system as if you had
-# executed the command on the native windows shell.
+# executed the command on the native windows shell. It achieves this by opening
+# an ssh connection to the `ssh-server` project which executes the given command
+# interactively inside the logged in users session.
 #
-# It achieves this by opening an ssh connection to the `ssh-server` project
-# which can either be accessed via `dom0.wslhv.local` if you open your
-# windows firewall to allow the connection or via a reverse SSH tunnel.
+# NOTE: It is assumed that the host system has VsCode installed with the
+# Remote (SSH) extension.
 #
-# At the expense of some overhead, the reverse SSH tunnel is a more portable,
-# more secure option and is what we do by default now.
+# see: <https://code.visualstudio.com/remote-tutorials/ssh/getting-started>
 sudo mkdir -p /usr/local/bin;
 sudo cp /tmp/code /usr/local/bin/code;
 sudo chmod +x /usr/local/bin/code;
 
+# Install SSHFS
+# ------------------------------------------------------------------------------
+# This configures the system to mount the hosts C drive using SFTP.
+# This connects to the `sftp-server` project via the `2223` SSH reverse tunnel.
+sudo dnf install -y fuse-sshfs;
+sudo mkdir -p /mnt/C;
+sudo sh -c "echo '$USER@localhost:/ /mnt/C fuse.sshfs noauto,x-systemd.automount,_netdev,user,idmap=user,follow_symlinks,port=2223,stricthostkeychecking=no,identityfile=/home/$USER/.ssh/id_rsa,allow_other,reconnect,default_permissions,uid=$(id -u),gid=$(id -g) 0 0' >> /etc/fstab";
 
 # Install gopass
 # ------------------------------------------------------------------------------

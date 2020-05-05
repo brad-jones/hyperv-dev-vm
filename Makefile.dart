@@ -12,6 +12,7 @@ import './image/Makefile.dart' as image;
 import './sshfs-win/Makefile.dart' as sshfsWin;
 import './ssh-server/Makefile.dart' as sshServer;
 import './ssh-rtunnel/Makefile.dart' as sshTunnel;
+import './sftp-server/Makefile.dart' as sftpServer;
 
 Future<void> main(List<String> argv) => drun(argv);
 
@@ -121,6 +122,7 @@ Future<void> install([
   await setGuestHostname();
   await authorizeGuestToSshToHost();
   await sshTunnel.install();
+  await sftpServer.install();
   await sshfsWin.install();
 }
 
@@ -140,6 +142,7 @@ Future<void> uninstall([bool deleteEverything = false]) async {
   await uninstallWindowsTerminalEntry();
   await unauthorizeGuestToSshToHost();
   await sshTunnel.uninstall();
+  await sftpServer.uninstall();
   await sshfsWin.uninstall();
 
   if (deleteEverything) {

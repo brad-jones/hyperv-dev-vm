@@ -4,23 +4,27 @@ import 'package:drun/drun.dart';
 import 'package:dexeca/dexeca.dart';
 import 'package:path/path.dart' as p;
 
-const _NSSM_SERVICE_NAME = 'wslhv-ssh-server';
+// with respect to doing this the other way around. ie: mounting the c driver inside the vm.
+// To get sshd working prioperly we have toi do https://github.com/PowerShell/Win32-OpenSSH/issues/1027#issuecomment-359449663
+// the scoop instalation failed to run sshd properly
+// And then the next issue is that sshd will not authenticate a domain account when not connected to a domain controller. ie: the vpn need to be up
+// so we could create a `localbrad` and give that user permissions to my `brad.jones` home dir but this seems hacky
+// we could look at https://github.com/pkg/sftp/blob/master/examples/go-sftp-server/main.go
+// and possibly https://github.com/hectane/go-acl to resolve file permissions issues related to running the SFTP server as SYSTEM
+
+const _NSSM_SERVICE_NAME = 'wslhv-sftp-server';
 
 Future<void> main(List<String> argv) => drun(argv);
 
-/// Builds an ssh server used to allow the guest vm to connect back to the host.
 Future<void> build() async {
-  log('building ssh-server.exe');
+  log('building sftp-server.exe');
   await dexeca(
     'go',
     ['build', '-v'],
-    workingDirectory: normalisePath('./ssh-server'),
+    workingDirectory: normalisePath('./sftp-server'),
   );
 }
 
-/// Using nssm, makes the ssh server run as a Windows background service.
-///
-/// > This assumes you have already installed <https://nssm.cc/>
 Future<void> install([bool reInstall = false]) async {
   await installScoopPackage('nssm');
 
@@ -40,18 +44,16 @@ Future<void> install([bool reInstall = false]) async {
 
   log('install nssm ${_NSSM_SERVICE_NAME} service');
   await powershell('''
-    nssm install ${_NSSM_SERVICE_NAME} "${normalisePath('./ssh-server/ssh-server.exe')}";
-    nssm reset ${_NSSM_SERVICE_NAME} ObjectName;
-    nssm set ${_NSSM_SERVICE_NAME} Type SERVICE_INTERACTIVE_PROCESS;
+    nssm install ${_NSSM_SERVICE_NAME} "${normalisePath('./sftp-server/sftp-server.exe')}";
     nssm set ${_NSSM_SERVICE_NAME} Start SERVICE_AUTO_START;
     nssm set ${_NSSM_SERVICE_NAME} AppStdout "${logFile}";
     nssm set ${_NSSM_SERVICE_NAME} AppStderr "${logFile}";
     nssm set ${_NSSM_SERVICE_NAME} AppStopMethodSkip 14;
     nssm set ${_NSSM_SERVICE_NAME} AppStopMethodConsole 0;
     nssm set ${_NSSM_SERVICE_NAME} AppKillProcessTree 0;
+    nssm set ${_NSSM_SERVICE_NAME} AppDirectory "${normalisePath('~/')}";
     nssm set ${_NSSM_SERVICE_NAME} AppEnvironmentExtra `
-      "PATH=${Platform.environment['PATH']}" `
-      SSH_PORT=2222 `
+      SSH_PORT=2223 `
       SSH_HOST_KEY_PATH=${normalisePath('~/.ssh/host_key')} `
       SSH_AUTHORIZED_KEYS_PATH=${normalisePath('~/.ssh/authorized_keys')};
     nssm start ${_NSSM_SERVICE_NAME} confirm;
